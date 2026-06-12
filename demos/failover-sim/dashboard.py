@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """
-failover-sim 的 LIVE 視覺儀表板 —— demo 專用:讓觀眾「親眼看到」殺主 → 秒級接手。
+failover-sim 的 LIVE 視覺儀表板 —— demo 專用:讓觀眾「親眼看到 + 有對照」殺主 → 秒級接手。
 
-在一個視窗跑這個 → 兩個節點變成方塊(整框上色:綠=PRIMARY、灰=STANDBY、紅=DOWN)、
-中間一個「系統 work 計數」一直往上跳。在另一個視窗 `docker kill fsim-node-X` 殺掉「綠色」主節點,
-觀眾即時看到:該框變紅、另一框變綠、而且上面那個數字一秒都沒停(= 系統不中斷)。
+每個節點顯示自己的「work 計數」:
+  - 綠色「服務中」的那台 → work **持續往上跳**(證明系統正在運作)。
+  - 殺掉它 → 它變紅「已停擺」、**work 凍結不動**(證明那台真的停了);另一台變綠、work 繼續跳。
+→ 紅的數字凍住 vs 綠的數字一直跳 = 「綠=運作中、紅=停擺」的具體對照。
 
 用法:
-  bash demo.sh down ; docker compose -p fsim up -d --build   # 先把 stack 起好
+  bash demo.sh down ; docker compose -p fsim up -d --build   # 先把 stack 起好(等~20s)
   python dashboard.py                    # 這個視窗看畫面(Windows 用 python、不是 python3)
-  # 另一個視窗:docker kill fsim-node-a   # 殺掉現在的綠色主、看接手
-  python dashboard.py --once             # 測試:只畫一格就結束
+  # 另一個視窗:docker kill fsim-node-a   # 殺掉現在「服務中」那台、看接手
 """
 import subprocess, time, sys, os
 try:
@@ -25,16 +25,12 @@ if os.name == "nt":   # 開 Windows VT 處理:讓 ANSI 色碼 + 游標控制生�
     except Exception:
         pass
 
-G = "\033[42m\033[30m"   # 綠底黑字 = PRIMARY
-GREY = "\033[100m\033[97m"  # 灰底白字 = STANDBY
-R = "\033[41m\033[97m"   # 紅底白字 = DOWN
-Y = "\033[93m"; B = "\033[1m"; DIM = "\033[90m"; RST = "\033[0m"
-CLR = "\033[2J\033[H"
+GG = "\033[92m"; RR = "\033[91m"; Y = "\033[93m"; B = "\033[1m"; DIM = "\033[90m"; RST = "\033[0m"
 NODES = ["a", "b"]
 
 
 def status(n):
-    """回 (role, work)。容器沒在 running → DOWN。"""
+    """回 (role, work)。容器沒在 running → DOWN;非主節點 work 為 None。"""
     r = subprocess.run(["docker", "ps", "-q", "-f", f"name=^fsim-node-{n}$", "-f", "status=running"],
                        capture_output=True, text=True)
     if not r.stdout.strip():
@@ -53,45 +49,44 @@ def status(n):
         return ("?", None)
 
 
-def box(n, role):
-    if role == "PRIMARY":   c, label = G,    "   PRIMARY    "
-    elif role == "STANDBY": c, label = GREY, "   standby    "
-    elif role == "DOWN":    c, label = R,    "   X DOWN X   "
-    else:                   c, label = Y,    f" {('…' + role)[:12]:^12} "
-    return [f"+----------------+",
-            f"|   NODE-{n.upper()}        |",
-            f"| {c}{label}{RST} |",
-            f"+----------------+"]
-
-
-def render(states, max_work):
-    a, b = box("a", states["a"][0]), box("b", states["b"][0])
+def render(states, work_seen):
     primary = next((n.upper() for n in NODES if states[n][0] == "PRIMARY"), None)
-    head = f"{G} node-{primary} 在服務 {RST}" if primary else f"{Y}切換中…{RST}"
-    lines = [f"{B}  ======  B4A 自動移轉 — LIVE  ======{RST}", ""]
-    lines.append(f"  系統 work 計數:{B}{Y} {max_work if max_work is not None else '—'} {RST}↑    {head}")
-    lines.append(f"  {DIM}(這個數字持續往上 = 系統一直在做事、沒中斷){RST}")
-    lines.append("")
-    for la, lb in zip(a, b):
-        lines.append("   " + la + "        " + lb)
+    head = f"{GG}● node-{primary} 在服務{RST}" if primary else f"{Y}⏳ 切換中…(這 2-3 秒暫時無人服務){RST}"
+    lines = [f"{B}  ======  B4A 自動移轉 — LIVE  ======{RST}", "",
+             f"  目前:{head}", ""]
+    for n in NODES:
+        role = states[n][0]
+        w = work_seen[n]
+        if role == "PRIMARY":
+            st = f"{GG}●  服務中 {RST}"
+            wk = f"{GG}work {w} ↑   (持續往上跳 = 正在運作){RST}" if w is not None else "work …"
+        elif role == "DOWN":
+            st = f"{RR}✗  已停擺 {RST}"
+            wk = f"{RR}work 凍結 @ {w}   (不動了 = 真的停了){RST}" if w is not None else f"{RR}—{RST}"
+        elif role == "STANDBY":
+            st = f"{DIM}·  熱備   {RST}"
+            wk = f"{DIM}待命中(隨時可接手){RST}"
+        else:
+            st = f"{Y}…  {role}{RST}"
+            wk = ""
+        lines.append(f"   {B}NODE-{n.upper()}{RST}    {st}    {wk}")
     lines += ["",
-              f"  {DIM}→ 在另一個視窗打:{RST}docker kill fsim-node-{(primary or 'A').lower()}   {DIM}(殺掉綠色的主){RST}",
-              f"  {DIM}  看那框變「紅」、另一框變「綠」、而上面數字「不中斷」。 (Ctrl-C 結束){RST}"]
-    # 游標歸位(不清整螢幕避免捲動)→ 逐行清到行尾 → 最後清除游標以下殘留
+              f"  {DIM}對照:綠的 work 一直跳 = 系統在運作;紅的 work 凍住不動 = 那台真的停了。{RST}",
+              f"  {DIM}→ 在另一視窗打:{RST}docker kill fsim-node-{(primary or 'A').lower()}  {DIM}(殺掉服務中那台){RST}",
+              f"  {DIM}  (Ctrl-C 結束){RST}"]
     sys.stdout.write("\033[H" + "\n".join(l + "\033[K" for l in lines) + "\033[J")
     sys.stdout.flush()
 
 
 def main():
     once = "--once" in sys.argv
-    max_work = None
+    work_seen = {"a": None, "b": None}   # 記住每台「最後看到的 work」→ 死掉後就凍結在那個值
     while True:
         states = {n: status(n) for n in NODES}
         for n in NODES:
-            w = states[n][1]
-            if w is not None and (max_work is None or w > max_work):
-                max_work = w
-        render(states, max_work)
+            if states[n][1] is not None:   # 只有「服務中」的台會回 work → 更新它;死的台保留舊值=凍結
+                work_seen[n] = states[n][1]
+        render(states, work_seen)
         if once:
             return
         time.sleep(0.5)
