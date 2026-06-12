@@ -12,11 +12,18 @@ failover-sim 的 LIVE 視覺儀表板 —— demo 專用:讓觀眾「親眼看�
   # 另一個視窗:docker kill fsim-node-a   # 殺掉現在的綠色主、看接手
   python dashboard.py --once             # 測試:只畫一格就結束
 """
-import subprocess, time, sys
+import subprocess, time, sys, os
 try:
     sys.stdout.reconfigure(encoding="utf-8")   # 防 Windows cp950 console 編碼問題
 except Exception:
     pass
+if os.name == "nt":   # 開 Windows VT 處理:讓 ANSI 色碼 + 游標控制生效,畫面才會「原地更新」不捲動
+    try:
+        import ctypes
+        _k = ctypes.windll.kernel32
+        _k.SetConsoleMode(_k.GetStdHandle(-11), 7)
+    except Exception:
+        pass
 
 G = "\033[42m\033[30m"   # 綠底黑字 = PRIMARY
 GREY = "\033[100m\033[97m"  # 灰底白字 = STANDBY
@@ -61,7 +68,7 @@ def render(states, max_work):
     a, b = box("a", states["a"][0]), box("b", states["b"][0])
     primary = next((n.upper() for n in NODES if states[n][0] == "PRIMARY"), None)
     head = f"{G} node-{primary} 在服務 {RST}" if primary else f"{Y}切換中…{RST}"
-    lines = [CLR, f"{B}  ======  B4A 自動移轉 — LIVE  ======{RST}", ""]
+    lines = [f"{B}  ======  B4A 自動移轉 — LIVE  ======{RST}", ""]
     lines.append(f"  系統 work 計數:{B}{Y} {max_work if max_work is not None else '—'} {RST}↑    {head}")
     lines.append(f"  {DIM}(這個數字持續往上 = 系統一直在做事、沒中斷){RST}")
     lines.append("")
@@ -70,7 +77,9 @@ def render(states, max_work):
     lines += ["",
               f"  {DIM}→ 在另一個視窗打:{RST}docker kill fsim-node-{(primary or 'A').lower()}   {DIM}(殺掉綠色的主){RST}",
               f"  {DIM}  看那框變「紅」、另一框變「綠」、而上面數字「不中斷」。 (Ctrl-C 結束){RST}"]
-    print("\n".join(lines), flush=True)
+    # 游標歸位(不清整螢幕避免捲動)→ 逐行清到行尾 → 最後清除游標以下殘留
+    sys.stdout.write("\033[H" + "\n".join(l + "\033[K" for l in lines) + "\033[J")
+    sys.stdout.flush()
 
 
 def main():
