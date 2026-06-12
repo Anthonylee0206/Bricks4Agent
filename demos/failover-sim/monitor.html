@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>B4A 自動移轉 — 即時監測</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin:0; background:#0d1117; color:#e6edf3; font-family:"Segoe UI","Microsoft JhengHei",system-ui,sans-serif; }
+  .wrap { max-width:1100px; margin:0 auto; padding:24px; }
+  h1 { font-size:22px; margin:0 0 4px; letter-spacing:1px; }
+  .sub { color:#8b949e; font-size:13px; margin-bottom:18px; }
+  #alert { display:none; padding:14px 18px; border-radius:10px; font-size:18px; font-weight:700; margin-bottom:18px; }
+  #alert.down { display:block; background:#3d1418; color:#ff7b72; border:1px solid #f85149; animation:flash 1s infinite; }
+  #alert.ok   { display:block; background:#10261a; color:#56d364; border:1px solid #2ea043; }
+  @keyframes flash { 0%,100%{opacity:1} 50%{opacity:.55} }
+  .cards { display:grid; grid-template-columns:1fr 1fr; gap:18px; margin-bottom:22px; }
+  .card { border-radius:14px; padding:20px; border:2px solid #30363d; background:#161b22; transition:all .25s; }
+  .card .name { font-size:15px; color:#8b949e; letter-spacing:2px; }
+  .card .role { font-size:30px; font-weight:800; margin:8px 0 6px; }
+  .card .work { font-size:15px; font-family:"Cascadia Code",Consolas,monospace; }
+  .card.primary { border-color:#2ea043; background:#0f2417; box-shadow:0 0 22px #2ea04344; }
+  .card.primary .role { color:#56d364; }
+  .card.standby { opacity:.7; }
+  .card.standby .role { color:#8b949e; }
+  .card.down    { border-color:#f85149; background:#2a1416; }
+  .card.down .role { color:#ff7b72; }
+  .panel { background:#161b22; border:1px solid #30363d; border-radius:14px; padding:18px; }
+  .panel h2 { font-size:14px; color:#8b949e; margin:0 0 12px; font-weight:600; }
+  canvas { width:100%; height:240px; display:block; }
+  .legend { font-size:12px; color:#8b949e; margin-top:10px; }
+  .legend b.g { color:#56d364; } .legend b.r { color:#ff7b72; }
+  .hint { color:#6e7681; font-size:13px; margin-top:18px; line-height:1.7; }
+  code { background:#21262d; padding:2px 7px; border-radius:5px; color:#e6edf3; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>B4A 自動移轉 — 即時監測</h1>
+  <div class="sub">監測者每 0.5 秒巡一次兩個節點;當機會自動跳警報、折線圖會看到處理量斷掉再恢復。</div>
+
+  <div id="alert"></div>
+
+  <div class="cards">
+    <div class="card" id="card-a"><div class="name">NODE-A</div><div class="role" id="role-a">—</div><div class="work" id="work-a"></div></div>
+    <div class="card" id="card-b"><div class="name">NODE-B</div><div class="role" id="role-b">—</div><div class="work" id="work-b"></div></div>
+  </div>
+
+  <div class="panel">
+    <h2>系統處理量(work 累計)— 即時</h2>
+    <canvas id="chart" width="1040" height="240"></canvas>
+    <div class="legend"><b class="g">綠線=有主節點在服務(處理量持續上升)</b>　·　<b class="r">紅段=當機/切換中(處理量停住)</b></div>
+  </div>
+
+  <div class="hint">
+    → 在終端機打 <code>docker kill fsim-node-<span id="killtarget">a</span></code>(殺掉服務中那台)<br>
+    → 看:那張卡變「紅 當機」、警報跳出、折線圖出現紅色平段(停住),幾秒後另一台接手、線恢復上升。
+  </div>
+</div>
+
+<script>
+const samples = [];          // {work, hasPrimary}
+const MAX = 90;
+let lastPrimary = null, recoverUntil = 0;
+
+function fmtRole(r){ return r==="PRIMARY"?"● 服務中":r==="STANDBY"?"· 熱備":r==="DOWN"?"✗ 當機":"… "+r; }
+function cardClass(r){ return r==="PRIMARY"?"card primary":r==="STANDBY"?"card standby":r==="DOWN"?"card down":"card"; }
+
+async function tick(){
+  let st;
+  try { st = await (await fetch("/api/state",{cache:"no-store"})).json(); }
+  catch(e){ return; }
+
+  for(const n of ["a","b"]){
+    const nd = st.nodes[n];
+    document.getElementById("card-"+n).className = cardClass(nd.role);
+    document.getElementById("role-"+n).textContent = fmtRole(nd.role);
+    let w = "";
+    if(nd.role==="PRIMARY") w = nd.work!=null ? `work ${nd.work} ↑（持續上升＝正在運作）` : "work …";
+    else if(nd.role==="DOWN") w = "work 凍結（停了）";
+    else if(nd.role==="STANDBY") w = "待命中（隨時可接手）";
+    document.getElementById("work-"+n).textContent = w;
+  }
+
+  // 監測者:偵測當機 / 恢復 → 跳警報
+  const a = document.getElementById("alert");
+  const now = Date.now();
+  if(!st.primary){
+    a.className = "down";
+    a.textContent = "⚠️  偵測到當機 — 目前無主節點服務,正在自動切換…";
+    lastPrimary = null;
+  } else {
+    if(lastPrimary && st.primary !== lastPrimary){ recoverUntil = now + 4000; }   // 換主=剛恢復
+    if(now < recoverUntil){
+      a.className = "ok";
+      a.textContent = `✅  node-${st.primary} 已自動接手,服務恢復(秒級移轉)`;
+    } else { a.className = ""; a.textContent = ""; }
+    lastPrimary = st.primary;
+    document.getElementById("killtarget").textContent = st.primary.toLowerCase();
+  }
+
+  // 折線圖:處理量
+  samples.push({work: st.work, hasPrimary: !!st.primary});
+  while(samples.length>MAX) samples.shift();
+  draw();
+}
+
+function draw(){
+  const c = document.getElementById("chart"), g = c.getContext("2d");
+  const W=c.width, H=c.height, pad=28;
+  g.clearRect(0,0,W,H);
+  const vals = samples.map(s=>s.work).filter(v=>v!=null);
+  if(vals.length<2){ return; }
+  const min=Math.min(...vals), max=Math.max(...vals), span=Math.max(1,max-min);
+  const x=i=> pad + i*(W-2*pad)/(MAX-1);
+  const y=v=> H-pad - (v-min)*(H-2*pad)/span;
+  // 格線
+  g.strokeStyle="#21262d"; g.lineWidth=1;
+  for(let k=0;k<=4;k++){ const yy=pad+k*(H-2*pad)/4; g.beginPath(); g.moveTo(pad,yy); g.lineTo(W-pad,yy); g.stroke(); }
+  // 線:有主=綠、無主(停)=紅
+  let prev=null;
+  for(let i=0;i<samples.length;i++){
+    const s=samples[i]; if(s.work==null){ prev=null; continue; }
+    if(prev!==null){
+      g.strokeStyle = (s.hasPrimary && samples[prev].hasPrimary) ? "#56d364" : "#ff7b72";
+      g.lineWidth=3; g.beginPath(); g.moveTo(x(prev),y(samples[prev].work)); g.lineTo(x(i),y(s.work)); g.stroke();
+    }
+    prev=i;
+  }
+  // 目前值
+  g.fillStyle="#8b949e"; g.font="12px monospace";
+  g.fillText("work = "+(vals[vals.length-1]), W-pad-110, pad-8);
+}
+
+tick(); setInterval(tick, 500);
+</script>
+</body>
+</html>
