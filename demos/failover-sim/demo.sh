@@ -5,9 +5,15 @@ cd "$(dirname "$0")"
 if [ "${1:-}" = "down" ]; then echo "拆除 demo stack…"; docker compose -p fsim down; exit 0; fi
 # 讀「誰是主 / work 計數」用 brokersim 自己的 /status 端點(比 etcdctl 讀 gateway-寫入的 key 可靠;
 # etcdctl 對 v3 JSON-gateway 寫入的 key 會讀不到——已驗證 gateway 直讀資料正確)。
-status(){ docker exec "fsim-node-$1" python3 -c "import urllib.request,json;d=json.load(urllib.request.urlopen('http://localhost:8080',timeout=2));w=d['last_work'];print(d['role'],d['node'],(w.split()[0] if w not in ('','(none)') else ''))" 2>/dev/null; }
+# 只對「還在 running」的容器查 /status —— 被 kill/分區的節點直接跳過(避免讀到死節點殘留的舊角色)。
+status(){
+  docker ps -q -f "name=^fsim-node-$1$" -f "status=running" | grep -q . || return
+  docker exec "fsim-node-$1" python3 -c "import urllib.request,json;d=json.load(urllib.request.urlopen('http://localhost:8080',timeout=2));w=d['last_work'];print(d['role'],d['node'],(w.split()[0] if w not in ('','(none)') else ''))" 2>/dev/null
+}
 leader(){ for n in a b; do set -- $(status "$n"); [ "${1:-}" = "PRIMARY" ] && { echo "$2"; return; }; done; }
 work(){   for n in a b; do set -- $(status "$n"); [ "${1:-}" = "PRIMARY" ] && { echo "${3:-}"; return; }; done; }
+# 輪詢直到「新主」出現(≠ 舊主、且活著)或逾時——比固定 sleep 可靠,避免在接手中途讀到。
+wait_new_leader(){ local old="$1" np=""; for _ in $(seq 1 20); do np=$(leader); [ -n "$np" ] && [ "$np" != "$old" ] && { echo "$np"; return; }; sleep 1; done; echo "$np"; }
 line(){ echo; echo "═══════════ $* ═══════════"; }
 
 line "啟動 3 etcd(quorum)+ 2 broker(主/備)"
@@ -23,8 +29,8 @@ echo "--- node-b log ---"; docker logs --tail 3 fsim-node-b 2>&1
 P=$(leader); pl=$(echo "$P" | tr 'A-Z' 'a-z')
 line "測試1:docker kill 主節點 node-$P(模擬 VPS 當機)"
 W1=$(work); docker kill "fsim-node-$pl" >/dev/null
-echo "已殺 node-$P(work 當時 = $W1)。等 lease 過期 + 接手(~10s)…"; sleep 10
-NP=$(leader)
+echo "已殺 node-$P(work 當時 = $W1)。等 lease 過期 + 接手…"
+NP=$(wait_new_leader "$P")
 echo "新 leader = node-$NP   $([ "$NP" != "$P" ] && [ -n "$NP" ] && echo '✅ 自動接手成功' || echo '✗ 沒接手')"
 echo "work 計數 = $(work)(應 > $W1 ⇒ 新主接續寫、單一寫者交接)"
 echo "--- 存活節點 log(接手)---"; docker logs --tail 4 "fsim-node-$(echo "$NP" | tr 'A-Z' 'a-z')" 2>&1
@@ -37,8 +43,8 @@ echo "node-$P 已拉回;leader 仍 = node-$(leader)(舊主回來不搶、避免�
 C=$(leader); cl=$(echo "$C" | tr 'A-Z' 'a-z')
 line "測試2:把現任主 node-$C 從網路分區(模擬 VPS 連不到 quorum)"
 W2=$(work); docker network disconnect fsim-net "fsim-node-$cl" >/dev/null
-echo "已分區 node-$C(work=$W2)。等自我 fence + 對側接手(~10s)…"; sleep 10
-NC=$(leader)
+echo "已分區 node-$C(work=$W2)。等自我 fence + 對側接手…"
+NC=$(wait_new_leader "$C")
 echo "新 leader = node-$NC   $([ "$NC" != "$C" ] && [ -n "$NC" ] && echo '✅ 對側接手' || echo '✗')"
 echo "--- 被分區節點 log(應自我 fence、停止動作、不繼續寫)---"; docker logs --tail 4 "fsim-node-$cl" 2>&1
 echo "work 計數 = $(work)(由新主繼續、被分區那個沒有偷寫 ⇒ 無腦裂/無雙寫)"
