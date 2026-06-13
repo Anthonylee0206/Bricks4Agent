@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>自動容錯移轉 Demo 小抄</title>
+<style>
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
+  body{margin:0;background:#0d1117;color:#e6edf3;font-family:"Microsoft JhengHei","Segoe UI",system-ui,sans-serif;line-height:1.6;font-size:17px;}
+  .wrap{max-width:680px;margin:0 auto;padding:16px 16px 60px;}
+  h1{font-size:21px;margin:6px 0 2px;}
+  .tag{color:#8b949e;font-size:13px;margin-bottom:16px;}
+  .one{background:#10261a;border:1px solid #2ea043;border-radius:12px;padding:14px 16px;font-size:18px;font-weight:700;color:#56d364;margin-bottom:18px;}
+  h2{font-size:16px;color:#58a6ff;border-top:1px solid #21262d;padding-top:16px;margin:22px 0 8px;}
+  .step{background:#161b22;border-left:3px solid #58a6ff;border-radius:8px;padding:10px 14px;margin:10px 0;}
+  .step b{color:#e6edf3;}
+  .say{color:#d2a8ff;}
+  .do{color:#ffa657;}
+  pre{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:12px;overflow-x:auto;margin:8px 0;}
+  code{font-family:"Cascadia Code",Consolas,monospace;font-size:15px;color:#79c0ff;white-space:pre;}
+  .warn{color:#ff7b72;} .ok{color:#56d364;} .dim{color:#8b949e;font-size:14px;}
+  details{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:0 14px;margin:8px 0;}
+  summary{cursor:pointer;padding:12px 0;font-weight:600;color:#58a6ff;}
+  details[open]{padding-bottom:12px;}
+  .q{color:#ffa657;font-weight:600;margin-top:8px;} .a{margin:2px 0 10px;}
+  table{width:100%;border-collapse:collapse;font-size:15px;margin:8px 0;}
+  td{border:1px solid #30363d;padding:7px 9px;vertical-align:top;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>自動容錯移轉 — Demo 小抄</h1>
+  <div class="tag">B4A · failover-sim · 手機版講稿 + 指令</div>
+
+  <div class="one">「自動容錯移轉的核心機制（自動選主＋失效自我隔離＋不腦裂）已驗證；真錢上線會先半自動當安全墊，等真錢冪等驗證完再全自動。」</div>
+
+  <h2>⚡ 開場前（先在筆電跑好）</h2>
+  <div class="step"><b>一鍵起儀表板</b>（起 stack＋開瀏覽器＋監測）：</div>
+  <pre><code>.\demos\failover-sim\start.ps1</code></pre>
+  <div class="dim">→ 瀏覽器自動開 http://localhost:8090，看到兩張卡＋折線圖。</div>
+  <div class="dim">→ 這個 PowerShell 視窗保持開著（它是監測服務）。</div>
+  <div class="dim warn">建議先完整跑一次＋錄影備案，live 出包不怕。</div>
+
+  <h2>🎤 講稿（邊操作邊講）</h2>
+
+  <div class="step"><b>① 痛點（30秒）</b><br>
+  <span class="say">「這是真錢交易控制平面。broker 死了誰管倉位？最天真的兩台互備會<b>腦裂</b>——兩台同時下單、重複下真錢單，比停機還慘。難題是：<b>保證同一刻只有一個主在動作。</b>」</span></div>
+
+  <div class="step"><b>② 架構（指儀表板，40秒）</b><br>
+  <span class="say">「兩張卡＝兩個節點，<b>綠色是現在的主、灰色是熱備</b>。下面折線＝系統處理量，一直往上＝正在做事。背後 3 個見證者投票決定誰是主，主握『租約』每秒續約，沒續到就自動失去主權。」</span></div>
+
+  <div class="step"><b>③ 殺主（動手，1分鐘）</b><br>
+  <span class="do">在另一視窗打：</span>
+  <pre><code>docker kill fsim-node-<綠的></code></pre>
+  <span class="say">「我直接殺掉主節點，模擬當機。看——<b>那張卡變紅、折線出現紅段（處理量停住）、頂部跳警報</b>。幾秒後<b>另一張卡變綠、折線繼續往上爬</b>——秒級接手，處理量一秒沒停。」</span><br>
+  <span class="dim">（綠的是哪台？看儀表板提示那行，或卡片綠色那個）</span></div>
+
+  <div class="step"><b>④（重點）分區自我fence（1.5分）</b><br>
+  <span class="do">把現任主從網路分區：</span>
+  <pre><code>docker network disconnect fsim-net fsim-node-<綠的></code></pre>
+  <span class="say">「最危險：網路分區、機器還活著但連不到投票。它偵測到→<b>自我隔離、停止寫入</b>，即使程序還活著。對側接手。<b>被分區那台一筆都沒偷寫——零腦裂、零雙下單。</b>」</span>
+  <span class="do">復原：</span>
+  <pre><code>docker network connect fsim-net fsim-node-<剛分區的></code></pre></div>
+
+  <div class="step"><b>⑤ 誠實收尾（30秒，加分）</b><br>
+  <span class="say">「單機跑證<b>機制正確</b>，不證實體機燒掉也活（那要真多機）。但驗證設計可行，零成本可重現就夠。真部署就是把容器散到 3 台機，機制一模一樣。<b>核心難題我證明了，剩下是工程落地。</b>」</span></div>
+
+  <h2>💻 Demo 指令（全集）</h2>
+  <table>
+    <tr><td>起 + 開儀表板</td><td><code>.\demos\failover-sim\start.ps1</code></td></tr>
+    <tr><td>殺主</td><td><code>docker kill fsim-node-&lt;綠的&gt;</code></td></tr>
+    <tr><td>分區</td><td><code>docker network disconnect fsim-net fsim-node-&lt;綠的&gt;</code></td></tr>
+    <tr><td>復原分區</td><td><code>docker network connect fsim-net fsim-node-&lt;那台&gt;</code></td></tr>
+    <tr><td>把殺掉的拉回</td><td><code>docker start fsim-node-&lt;那台&gt;</code></td></tr>
+    <tr><td>全自動版（備案）</td><td><code>bash demos/failover-sim/demo.sh</code></td></tr>
+    <tr><td>結束拆除</td><td><code>.\demos\failover-sim\stop.ps1</code></td></tr>
+  </table>
+
+  <details><summary>🛡 被挑戰時怎麼答（點開）</summary>
+    <div class="q">Q：單機模擬，真多機呢？</div>
+    <div class="a">A：單機證機制正確；真多機網路要實測，但用的是<b>真 etcd 共識</b>、機制一樣。</div>
+    <div class="q">Q：真錢自動切不危險？</div>
+    <div class="a">A：正是為什麼真錢我選<b>半自動（人工閘）</b>——機制是自動的，但真錢加一道確認，等冪等層驗完再放全自動。<b>刻意的安全決策。</b></div>
+    <div class="q">Q：怎麼證明沒腦裂？</div>
+    <div class="a">A：<b>自我 fence</b>——失去租約的舊主自己停寫；折線紅段就是它停手，work 計數全程<b>單一寫者、沒被兩個主重複寫</b>。</div>
+    <div class="q">Q：為什麼不用 Kubernetes？</div>
+    <div class="a">A：k8s 解多節點調度，但 broker 是<b>有狀態單例</b>，k8s 不自動解狀態複製、也管不到「交易所無法 fence」。我用租約自我 fence 直接解,比上整套 k8s 輕。</div>
+    <div class="q">Q：etcd 自己掛了？</div>
+    <div class="a">A：3 個組多數決，掛 1 個還能跑；掛 2 個才停——<b>寧可停也不腦裂</b>。</div>
+  </details>
+
+  <details><summary>📏 用詞：能講 / 別講(點開)</summary>
+    <div class="q ok">✅ 可以講</div>
+    <table>
+      <tr><td>自動容錯移轉（機制）</td><td>主死→備機自動秒級接手（已證）</td></tr>
+      <tr><td>容錯 / 暖備</td><td>容得下一台死、備機是熱的</td></tr>
+    </table>
+    <div class="q warn">✗ 別講(會被打)</div>
+    <table>
+      <tr><td>✗ 完整高可用系統做好了</td><td>狀態+流量+多機還沒</td></tr>
+      <tr><td>✗ 真錢已全自動容錯</td><td>真錢 failover 還沒接好/驗過</td></tr>
+    </table>
+  </details>
+
+  <div class="dim" style="margin-top:22px;">提醒：demo 前先 <code>start.ps1</code> 跑一次確認綠卡＋折線正常；殺的是「綠色那台」。</div>
+</div>
+</body>
+</html>
