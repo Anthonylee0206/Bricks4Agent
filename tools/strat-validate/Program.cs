@@ -1107,9 +1107,10 @@ int sigTested = 0, sigPassed = 0;
 var sigNames = new HashSet<string>();
 var sigT = new Dictionary<string, double>();
 var trials = new List<(string name, double sr, int n, double skew, double kurt, double tstat)>();
+var trialSeries = new List<List<double>>();   // #2b:每策略每期序列、用來算有效獨立試驗數 N_eff(跟 trials 對齊)
 // 平行算每策略(sortKey + series 統計);bootstrap RNG 用 per-strategy seed(42+i)= 執行緒安全 + 可重現。
 // 之後按 sortKey(= PoolOosFolds 均值、同 baseline)排序印 + 依序填 sigT/sigNames/trials(不被平行交錯)。
-var sigRes = new ConcurrentDictionary<string, (decimal sortKey, string line, double t, bool sig, bool hasTrial, double sr, int n, double sk, double ku)>();
+var sigRes = new ConcurrentDictionary<string, (decimal sortKey, string line, double t, bool sig, bool hasTrial, double sr, int n, double sk, double ku, List<double> series)>();
 Parallel.For(0, strats.Length, ParOpts, i =>
 {
     var (name, s) = strats[i];
@@ -1123,16 +1124,16 @@ Parallel.For(0, strats.Length, ParOpts, i =>
         double mu = series.Average();
         double sd = Math.Sqrt(series.Select(x => (x - mu) * (x - mu)).Sum() / (series.Count - 1));
         var (sk, ku) = SkewKurt(series.Select(x => (decimal)x).ToList());
-        sigRes[name] = (sortKey, line, t, sig, true, sd > 0 ? mu / sd : 0, series.Count, sk, ku);
+        sigRes[name] = (sortKey, line, t, sig, true, sd > 0 ? mu / sd : 0, series.Count, sk, ku, series);
     }
-    else sigRes[name] = (sortKey, line, t, sig, false, 0, 0, 0, 0);
+    else sigRes[name] = (sortKey, line, t, sig, false, 0, 0, 0, 0, new List<double>());
 });
 foreach (var (name, _) in strats.OrderByDescending(x => sigRes.TryGetValue(x.name, out var r) ? r.sortKey : -999m))
 {
     if (!sigRes.TryGetValue(name, out var r)) continue;
     sigT[name] = r.t; if (r.sig) sigNames.Add(name);
     sigTested++; if (r.sig) sigPassed++;
-    if (r.hasTrial) trials.Add((name, r.sr, r.n, r.sk, r.ku, r.t));   // sr/n 用每期序列 = DSR 也吃有效期數
+    if (r.hasTrial) { trials.Add((name, r.sr, r.n, r.sk, r.ku, r.t)); trialSeries.Add(r.series); }   // sr/n 用每期序列 = DSR 也吃有效期數;series 留著算 N_eff
     Console.WriteLine(r.line);
 }
 Console.WriteLine($"  測 {sigTested} 支、{sigPassed} 支 95%CI 下界>0(已用每期跨幣均值收掉幣相關 + block-bootstrap 收掉重疊窗 → n=有效期數、t 不再灌水)。");
@@ -1149,14 +1150,34 @@ if (trials.Count >= 3)
     double srMean = trials.Average(x => x.sr);
     double srVar = trials.Sum(x => (x.sr - srMean) * (x.sr - srMean)) / (N - 1);
     double srStd = Math.Sqrt(Math.Max(srVar, 0));
-    double sr0 = srStd * ((1 - euler) * NormInv(1.0 - 1.0 / N) + euler * NormInv(1.0 - 1.0 / (N * Math.E)));
+    // #2b:有效獨立試驗數 N_eff —— 變體間高度相關(harm_prz_* / retail_ls_* tight/loose 等近重複)不該各算一次獨立試驗。
+    // N_eff = N² / Σᵢⱼ ρᵢⱼ²(相關矩陣 participation ratio / 有效獨立維度;全獨立→N、全相同→1)。餵 DSR 的 SR* 與 MinBTL;
+    // BH-FDR/Bonferroni 仍用 raw N(那算的是「實際做了幾次檢定」)。源:Bailey & López de Prado DSR 論文 Appendix。
+    double PairCorr(List<double> u, List<double> v)
+    {
+        int m = Math.Min(u.Count, v.Count); if (m < 5) return 0;
+        double mu = 0, mv = 0; for (int k = 0; k < m; k++) { mu += u[k]; mv += v[k]; } mu /= m; mv /= m;
+        double suv = 0, suu = 0, svv = 0;
+        for (int k = 0; k < m; k++) { double du = u[k] - mu, dv = v[k] - mv; suv += du * dv; suu += du * du; svv += dv * dv; }
+        return (suu > 0 && svv > 0) ? suv / Math.Sqrt(suu * svv) : 0;
+    }
+    double sumSqCorr = N; double absRhoSum = 0; int pairCnt = 0;   // 對角線 ρ_ii²=1 共 N 個
+    for (int ia = 0; ia < trialSeries.Count; ia++)
+        for (int ib = ia + 1; ib < trialSeries.Count; ib++)
+        {
+            double rho = PairCorr(trialSeries[ia], trialSeries[ib]);
+            sumSqCorr += 2 * rho * rho; absRhoSum += Math.Abs(rho); pairCnt++;
+        }
+    double nEff = Math.Min(N, Math.Max(1.0, (double)N * N / sumSqCorr));
+    double avgAbsRho = pairCnt > 0 ? absRhoSum / pairCnt : 0;
+    double sr0 = srStd * ((1 - euler) * NormInv(1.0 - 1.0 / nEff) + euler * NormInv(1.0 - 1.0 / (nEff * Math.E)));
     var withP = trials.Select(x => (x.name, x.sr, x.n, x.skew, x.kurt, p: 1.0 - NormCdf(x.tstat))).ToList();
     // BH-FDR 閾值(α=0.05):p 升冪排序、找最大 k 使 p_(k) ≤ k/N·α
     var pAsc = withP.OrderBy(x => x.p).ToList();
     double bhThresh = 0;
     for (int k = 0; k < pAsc.Count; k++) if (pAsc[k].p <= (k + 1.0) / N * 0.05) bhThresh = pAsc[k].p;
     double bonf = 0.05 / N;
-    Console.WriteLine($"\n=== 多重檢定 + Deflated Sharpe(N={N} 變體、SR*={sr0:F3}=試 N 次期望最大 Sharpe 基準)===");
+    Console.WriteLine($"\n=== 多重檢定 + Deflated Sharpe(N={N} 變體 → N_eff={nEff:F0} 有效獨立[平均|ρ|={avgAbsRho:F2}]、SR*={sr0:F3}=試 N_eff 次期望最大 Sharpe 基準)===");
     Console.WriteLine($"  {"strategy",-22}{"SR",7}{"DSR",8}{"p(1側)",10}{"Bonf",6}{"BH",5}");
     int dsrPass = 0, bonfPass = 0, bhPass = 0;
     var bySr = withP.OrderByDescending(x => x.sr).ToList();
@@ -1175,15 +1196,15 @@ if (trials.Count >= 3)
 
     // ── Minimum Backtest Length(Bailey, Borwein, López de Prado & Zhu 2014)──
     // 試 N 個配置時,需要的最小回測「年數」;樣本短於它 → 純噪音幾乎保證冒出年化 Sharpe 1 的假象。
-    //   MinBTL ≈ 2·ln(N) / SR*_annual²(SR*_annual=想排除的噪音年化 Sharpe、取 1.0)
-    //   噪音期望最高年化 Sharpe ≈ √(2·ln(N) / 樣本年數)（最佳策略要明顯高於它才可信)
-    // 純加法、不動上面任何 DSR/p 值計算;只多一道「樣本夠不夠扛這麼多變體」的可見警示。
+    //   MinBTL ≈ 2·ln(N_eff) / SR*_annual²(SR*_annual=想排除的噪音年化 Sharpe、取 1.0;N 用有效獨立數 #2b)
+    //   噪音期望最高年化 Sharpe ≈ √(2·ln(N_eff) / 樣本年數)（最佳策略要明顯高於它才可信)
+    // 純加法、不動上面任何 DSR/p 值計算;只多一道「樣本夠不夠扛這麼多『獨立』變體」的可見警示。
     double sampleYears = data.Count > 0 ? data.Values.Max(v => v.Count) / 252.0 : 0;
-    double minBtlYears = 2.0 * Math.Log(N) / (1.0 * 1.0);
-    double expMaxAnnualSh = sampleYears > 0 ? Math.Sqrt(2.0 * Math.Log(N) / sampleYears) : 0;
-    Console.WriteLine($"  → MinBTL(Bailey-LdP):試 {N} 個配置需 ≥ {minBtlYears:F1} 年樣本(排除噪音年化 Sharpe 1);" +
-        $"本資料 ≈ {sampleYears:F1} 年 {(sampleYears >= minBtlYears ? "✅ 足夠" : "⚠️ 不足 → 變體太多/樣本太短、多重檢定假象風險高")}。");
-    Console.WriteLine($"     純噪音在 {sampleYears:F1} 年 × {N} 配置的期望最高『年化』Sharpe ≈ {expMaxAnnualSh:F2}" +
+    double minBtlYears = 2.0 * Math.Log(nEff) / (1.0 * 1.0);
+    double expMaxAnnualSh = sampleYears > 0 ? Math.Sqrt(2.0 * Math.Log(nEff) / sampleYears) : 0;
+    Console.WriteLine($"  → MinBTL(Bailey-LdP):試 {N} 個變體(有效獨立 ≈ {nEff:F0})需 ≥ {minBtlYears:F1} 年樣本(排除噪音年化 Sharpe 1);" +
+        $"本資料 ≈ {sampleYears:F1} 年 {(sampleYears >= minBtlYears ? "✅ 足夠" : "⚠️ 不足 → 獨立變體太多/樣本太短、多重檢定假象風險高")}。");
+    Console.WriteLine($"     純噪音在 {sampleYears:F1} 年 × {nEff:F0} 個獨立配置的期望最高『年化』Sharpe ≈ {expMaxAnnualSh:F2}" +
         $" —— 最佳策略的年化 Sharpe 要明顯高於這個才算真 edge(諧波/TA 尤其要嚴,文獻視其易過擬合)。");
 }
 
