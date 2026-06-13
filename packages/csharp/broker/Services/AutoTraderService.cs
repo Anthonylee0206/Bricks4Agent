@@ -2074,7 +2074,17 @@ public class AutoTraderService : BackgroundService
 
                 if (!passed && orderAction == "reject")
                 {
-                    AddLog(item, "blocked", "Risk check rejected order");
+                    // 比照 perp 路徑:把 risk-worker 回的「具體違反規則」寫進 log/RecentLogs。
+                    // 原本只記通用 "Risk check rejected order"、無法從觀測面 debug 是哪條規則(r17/cash/cooldown…)擋的。
+                    var msgs = new List<string>();
+                    if (riskDoc.TryGetProperty("violations", out var vs) && vs.ValueKind == JsonValueKind.Array)
+                    {
+                        foreach (var v in vs.EnumerateArray())
+                            if (v.TryGetProperty("message", out var vm)) msgs.Add(vm.GetString() ?? "");
+                    }
+                    var summary = msgs.Count > 0 ? string.Join("; ", msgs) : "risk rejected";
+                    AddLog(item, "blocked", $"Risk check rejected: {summary}");
+                    _logger.LogWarning("AutoTrader risk blocked {Symbol} on {Exchange}: {Msg}", symbol, exchange, summary);
                     return;
                 }
 
