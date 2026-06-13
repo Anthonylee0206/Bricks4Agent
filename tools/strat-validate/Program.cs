@@ -1172,6 +1172,19 @@ if (trials.Count >= 3)
     }
     Console.WriteLine($"  → 原始 95%CI 顯著 {sigPassed} 支;多重檢定後:DSR≥0.95 {dsrPass} 支、Bonferroni {bonfPass} 支、BH-FDR(5%) {bhPass} 支。");
     Console.WriteLine($"     差額 = 多重檢定揪出的假陽性;只信過 DSR / BH-FDR 的才是真 edge。");
+
+    // ── Minimum Backtest Length(Bailey, Borwein, López de Prado & Zhu 2014)──
+    // 試 N 個配置時,需要的最小回測「年數」;樣本短於它 → 純噪音幾乎保證冒出年化 Sharpe 1 的假象。
+    //   MinBTL ≈ 2·ln(N) / SR*_annual²(SR*_annual=想排除的噪音年化 Sharpe、取 1.0)
+    //   噪音期望最高年化 Sharpe ≈ √(2·ln(N) / 樣本年數)（最佳策略要明顯高於它才可信)
+    // 純加法、不動上面任何 DSR/p 值計算;只多一道「樣本夠不夠扛這麼多變體」的可見警示。
+    double sampleYears = data.Count > 0 ? data.Values.Max(v => v.Count) / 252.0 : 0;
+    double minBtlYears = 2.0 * Math.Log(N) / (1.0 * 1.0);
+    double expMaxAnnualSh = sampleYears > 0 ? Math.Sqrt(2.0 * Math.Log(N) / sampleYears) : 0;
+    Console.WriteLine($"  → MinBTL(Bailey-LdP):試 {N} 個配置需 ≥ {minBtlYears:F1} 年樣本(排除噪音年化 Sharpe 1);" +
+        $"本資料 ≈ {sampleYears:F1} 年 {(sampleYears >= minBtlYears ? "✅ 足夠" : "⚠️ 不足 → 變體太多/樣本太短、多重檢定假象風險高")}。");
+    Console.WriteLine($"     純噪音在 {sampleYears:F1} 年 × {N} 配置的期望最高『年化』Sharpe ≈ {expMaxAnnualSh:F2}" +
+        $" —— 最佳策略的年化 Sharpe 要明顯高於這個才算真 edge(諧波/TA 尤其要嚴,文獻視其易過擬合)。");
 }
 
 // 2026-05-27 Q1.1:Kelly fraction sizing 推薦(每支顯著策略、用 walk-forward win-rate / avg win / avg loss)
