@@ -15,7 +15,10 @@ param([switch]$NoOpen)
 
 $ErrorActionPreference = 'Stop'
 try { [Console]::OutputEncoding = [Text.Encoding]::UTF8 } catch { }  # 中文輸出不亂碼
-$repoRoot = Split-Path -Parent $PSScriptRoot
+# repo 根目錄:優先用腳本自身位置(scripts/ 的上層);某些叫用方式 $PSScriptRoot 會是 null,退回當前目錄。
+$scriptDir = if ($PSScriptRoot) { $PSScriptRoot } elseif ($PSCommandPath) { Split-Path -Parent $PSCommandPath } else { $null }
+$repoRoot = if ($scriptDir) { Split-Path -Parent $scriptDir } else { (Get-Location).Path }
+if (-not (Test-Path (Join-Path $repoRoot 'packages/csharp'))) { $repoRoot = (Get-Location).Path }  # 驗證是 repo 根、否則用 cwd
 Set-Location $repoRoot
 
 $outRaw  = '.test-output/coverage-raw'
