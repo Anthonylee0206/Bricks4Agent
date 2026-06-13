@@ -194,16 +194,11 @@ public class BingxPerpetualClient : IPerpetualClient
                 });
                 qs["takeProfit"] = tpJson;
             }
-            if (order.StopLossPrice.HasValue && order.StopLossPrice.Value > 0m)
-            {
-                var slJson = JsonSerializer.Serialize(new
-                {
-                    type = "STOP_MARKET",
-                    stopPrice = order.StopLossPrice.Value,
-                    workingType = "MARK_PRICE",
-                });
-                qs["stopLoss"] = slJson;
-            }
+            // finding I:SL **不再內嵌**進這張原子單。原本內嵌 stopLoss 時,若市價腿成交但內嵌 SL 被 BingX
+            // 拒(壞 tick / 距離 / 精度),EnsureOk 會拋例外 → 整單當失敗 → broker 不追蹤 → 孤兒裸倉(有倉無 SL)。
+            // 改成:市價腿成交後、另發一張「獨立」reduce-only STOP_MARKET(見下方 return 前),
+            // SL 失敗也不會 unwind 已成交的進場(只標 filled_no_sl 讓 broker soft-SL 接管)。
+            // TP 失敗非安全風險(沒成交頂多少賺)、保留內嵌。
         }
 
         var json = await SignedPostFormAsync("/openApi/swap/v2/trade/order", qs, ct);
@@ -228,7 +223,57 @@ public class BingxPerpetualClient : IPerpetualClient
         order.UpdatedAt = DateTime.UtcNow;
         if (ord.TryGetProperty("avgPrice", out var ap)) order.FilledPrice = ParseDecValue(ap);
         if (ord.TryGetProperty("executedQty", out var eq)) order.FilledQty = ParseDecValue(eq);
+
+        // finding I:進場是 live(成交/部分/已提交)→ 把 SL 當「獨立」reduce-only STOP_MARKET 補掛。
+        // 整段包 try/catch:SL 失敗只標 filled_no_sl + Error,**絕不**讓已成交的進場被丟掉(否則 = 孤兒裸倉)。
+        // BuildStopLossOrder 設 ReduceOnly=true → 遞迴呼叫時上面的 !ReduceOnly 區塊不掛 TP/SL,遞迴有界。
+        if (!order.ReduceOnly && order.StopLossPrice is decimal slPx && slPx > 0m
+            && order.Status is "filled" or "partial" or "submitted")
+        {
+            var slOrder = BuildStopLossOrder(order, slPx);
+            try
+            {
+                var slResult = await PlaceOrderAsync(slOrder, ct);   // 走標準 STOP_MARKET 路徑、沿用 101400 冪等
+                // idempotent_duplicate(failover 重送同一 -sl key)= 先前已掛、Error=null → 不算失敗。
+                if (slResult.Status == "rejected" || slResult.Error != null)
+                {
+                    order.Status = "filled_no_sl";
+                    order.Error = $"entry filled but SL rejected: {slResult.Error ?? slResult.Status}";
+                    _logger.LogError("BingX entry filled but standalone SL rejected for {Sym} {Side}/{Pos}: {Err}",
+                        order.Symbol, order.Side, order.PositionSide, order.Error);
+                }
+            }
+            catch (Exception ex)
+            {
+                order.Status = "filled_no_sl";
+                order.Error = $"entry filled but SL placement threw: {ex.Message}";
+                _logger.LogError(ex, "BingX entry filled but SL placement threw for {Sym} {Side}/{Pos}",
+                    order.Symbol, order.Side, order.PositionSide);
+            }
+        }
         return order;
+    }
+
+    /// <summary>
+    /// finding I — 純函式:從一張開倉單推出對應的 reduce-only STOP_MARKET 平倉保護單。
+    /// close side 為開倉 side 的反向(BUY↔SELL)、positionSide 不變、reduceOnly=true、type=stop_market、qty 沿用。
+    /// OrderId 加 "-sl" 後綴沿用冪等(failover 重送同一保護單被 BingX 以 101400 擋);base 先截到 33 char 確保 ≤36。
+    /// </summary>
+    internal static PerpetualOrder BuildStopLossOrder(PerpetualOrder entry, decimal slPrice)
+    {
+        var closeSide = entry.Side.Equals("buy", StringComparison.OrdinalIgnoreCase) ? "sell" : "buy";
+        var slId = string.IsNullOrWhiteSpace(entry.OrderId)
+            ? string.Empty
+            : (entry.OrderId.Length > 33 ? entry.OrderId.Substring(0, 33) : entry.OrderId) + "-sl";
+        return new PerpetualOrder
+        {
+            OrderId = slId,
+            Symbol = entry.Symbol, Exchange = entry.Exchange,
+            Side = closeSide, PositionSide = entry.PositionSide,
+            OrderType = "stop_market", Quantity = entry.Quantity,
+            StopPrice = slPrice, ReduceOnly = true,
+            CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow,
+        };
     }
 
     public async Task<PerpetualOrder> CancelOrderAsync(string symbol, string externalId, CancellationToken ct = default)

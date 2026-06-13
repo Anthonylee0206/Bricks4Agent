@@ -89,8 +89,32 @@ public static class PerpetualEndpoints
                     if (!ok)
                         return Results.BadRequest(ApiResponseHelper.Error($"pre-flight: {err}"));
                 }
+
+                // finding F:人工下單冪等。自動路徑(AutoTrader)早有 client_order_id 去重(BingX 101400 擋重複),
+                // 但人工 POST /order 原本裸傳 body、沒帶 key → 重試 / 連點 / 前端重送 = 重複下真錢單。
+                // caller 沒自帶 client_order_id 就注入 deterministic key(m- 前綴、5 分鐘桶、含 reduceOnly 分流開/平)。
+                // 注入發生在 DispatchAsync 前 → key 進派發 payload、即使重派 BingX 仍以 101400 擋第二單。
+                // 緊急可設 PERP_MANUAL_IDEMPOTENT_KEYS=0 關閉(預設啟用、對齊自動路徑 finding K)。
+                if (Environment.GetEnvironmentVariable("PERP_MANUAL_IDEMPOTENT_KEYS")
+                        is not ("0" or "false" or "False" or "FALSE" or "off" or "OFF"))
+                {
+                    var hasCaller = doc.TryGetProperty("client_order_id", out var cidEl)
+                        && cidEl.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(cidEl.GetString());
+                    if (!hasCaller)  // 尊重 caller 自己的冪等鍵、不覆蓋
+                    {
+                        var owner   = RequestBodyHelper.GetPrincipalId(req.HttpContext);
+                        var sideStr = doc.TryGetProperty("side",          out var sd) ? sd.GetString() ?? "" : "";
+                        var psStr   = doc.TryGetProperty("position_side", out var ps) ? ps.GetString() ?? "" : "";
+                        var bucket  = DateTimeOffset.UtcNow.ToUnixTimeSeconds() / 300;
+                        var key     = DeriveManualOrderKey(owner, exch, sym, sideStr, psStr, qty, reduceOnly, bucket);
+                        // 用 Dictionary<string,JsonElement> round-trip、保留 __credentials / tp / sl 等所有原欄位與型別
+                        var map = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(body) ?? new();
+                        map["client_order_id"] = JsonSerializer.SerializeToElement(key);
+                        body = JsonSerializer.Serialize(map);
+                    }
+                }
             }
-            catch (JsonException) { /* body parse 失敗 → 讓 worker 端處理 */ }
+            catch (JsonException) { /* body parse 失敗 → 不注入、讓 worker 端處理 */ }
 
             var r = await dispatcher.DispatchAsync(Build(req.HttpContext, "trading.perpetual", "place_order", body));
             return ToResponse(r);
@@ -155,6 +179,20 @@ public static class PerpetualEndpoints
             var r = await dispatcher.DispatchAsync(Build(req.HttpContext, "trading.perpetual", "get_mark_price", payload));
             return ToResponse(r);
         });
+    }
+
+    /// <summary>
+    /// finding F — 人工下單的 deterministic 冪等 key（純函式、好測,比照 AutoTraderService.DeriveIdemKey）。
+    /// 同一意圖（owner|exchange|symbol|side|positionSide|qty|reduceOnly + bucket）→ 同 key → BingX 以 101400 擋重複。
+    /// reduceOnly 納入 basis → 開倉與平倉即使同 symbol/side 也分流;m- 前綴(manual)、≤36 char、不撞自動的 op-/cl-/-sl。
+    /// </summary>
+    public static string DeriveManualOrderKey(
+        string owner, string exchange, string symbol, string side, string positionSide,
+        decimal quantity, bool reduceOnly, long bucket)
+    {
+        var basis = $"{owner}|{exchange}|{symbol}|{side}|{positionSide}|{quantity:G}|{reduceOnly}|{bucket}";
+        var h = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(basis)));
+        return $"m-{h.Substring(0, 16).ToLowerInvariant()}";
     }
 
     /// <summary>

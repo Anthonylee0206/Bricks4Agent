@@ -516,6 +516,80 @@ public class RiskEngineNewRulesTests
         lossViolations[0].RuleId.Should().Be("r17");
     }
 
+    // ── finding H：開倉餘額不可驗證(balance<=0)時 fail-closed ─────────
+
+    [Fact]
+    public void CheckPerp_OpenWithZeroBalance_FailsClosed()
+    {
+        // get_account 查不到餘額(balance=0)時、r14/r16 都算不準 → 開倉必須擋(fail-closed)、不能 fail-open
+        var engine = new RiskEngine(RiskEngine.DefaultRules());
+        var snap = new PerpetualSnapshot { Balance = 0m };
+
+        var r = engine.CheckPerp("BTCUSDT", "bingx", "BUY", "LONG",
+            quantity: 0.001m, estimatedPrice: 50000m, leverage: 5, snap, initialSlPct: 5m);
+
+        r.Passed.Should().BeFalse("balance 不可驗證時開倉必須 fail-closed");
+        r.Violations.Should().ContainSingle(v => v.RuleId == "rH");
+    }
+
+    [Fact]
+    public void CheckPerp_CloseWithZeroBalance_StillAllowed()
+    {
+        // 平倉永遠放行、不被新閘擋(擋出場才是真風險);平多=SELL/LONG、平空=BUY/SHORT 都驗
+        var engine = new RiskEngine(RiskEngine.DefaultRules());
+        var snap = new PerpetualSnapshot { Balance = 0m };
+
+        var closeLong = engine.CheckPerp("BTCUSDT", "bingx", "SELL", "LONG",
+            quantity: 0.001m, estimatedPrice: 50000m, leverage: 5, snap, initialSlPct: 5m);
+        var closeShort = engine.CheckPerp("BTCUSDT", "bingx", "BUY", "SHORT",
+            quantity: 0.001m, estimatedPrice: 50000m, leverage: 5, snap, initialSlPct: 5m);
+
+        closeLong.Passed.Should().BeTrue("平多 balance=0 仍須放行");
+        closeShort.Passed.Should().BeTrue("平空 balance=0 仍須放行");
+    }
+
+    [Fact]
+    public void CheckPerp_OpenWithPositiveBalance_R14StillEvaluated()
+    {
+        // 有餘額時新閘不短路掉正常規則:過大 notional 仍以 r14 擋(不是 rH)
+        var r14 = new RiskRule
+        {
+            RuleId = "r14", Name = "Max Loss Per Trade %",
+            Type = "max_loss_per_trade_pct", Threshold = 2m, Enabled = true, Scope = "perp",
+        };
+        var engine = new RiskEngine(new() { r14 });
+        var snap = new PerpetualSnapshot { Balance = 100m };
+
+        // maxLoss=100×2%=2 → maxNotional=2/5%=40;下單 50 名目 > 40 → r14 擋
+        var r = engine.CheckPerp("BTCUSDT", "bingx", "BUY", "LONG",
+            quantity: 0.001m, estimatedPrice: 50000m, leverage: 5, snap, initialSlPct: 5m);
+
+        r.Passed.Should().BeFalse();
+        r.Violations.Should().ContainSingle(v => v.RuleId == "r14");
+        r.Violations.Should().NotContain(v => v.RuleId == "rH", "有餘額時不該觸發 rH");
+    }
+
+    [Fact]
+    public void CheckPerp_OpenWithPositiveBalance_SmallSize_Passes()
+    {
+        // happy path:有餘額 + 小倉 → 全過、不被 rH 誤傷
+        var engine = new RiskEngine(RiskEngine.DefaultRules());
+        var snap = new PerpetualSnapshot { Balance = 10000m };
+
+        var r = engine.CheckPerp("BTCUSDT", "bingx", "BUY", "LONG",
+            quantity: 0.0001m, estimatedPrice: 50000m, leverage: 5, snap, initialSlPct: 5m);
+
+        r.Passed.Should().BeTrue();
+    }
+
+    [Theory]
+    [InlineData(0, false)]
+    [InlineData(-1, false)]
+    [InlineData(0.01, true)]
+    [InlineData(100, true)]
+    public void PerpBalanceVerifiableForOpen_Contract(decimal balance, bool expected)
+        => RiskEngine.PerpBalanceVerifiableForOpen(balance).Should().Be(expected);
+
     // ── Helpers ──────────────────────────────────────────────────
 
     private static RiskRule Rule(string id, string type, decimal threshold, string? paramsJson = null)

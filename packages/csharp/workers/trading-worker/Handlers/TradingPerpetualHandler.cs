@@ -230,7 +230,10 @@ public class TradingPerpetualHandler : ICapabilityHandler
             // Persist 永續成交到 local DB（給 get_trade_history / pnl-summary 用）。
             // BingX market order 通常即時成交、result 會帶 FilledQty + FilledPrice。
             // 開倉只有手續費沒 realized_pnl；reduce_only 平倉才有 realized_pnl。
-            if (_db != null && result.Status == "filled" && result.FilledQty > 0 && result.FilledPrice.HasValue)
+            // finding I:filled_no_sl(進場成交但獨立 SL 失敗)也是「已成交」→ 必須一併記錄,
+            // 否則這筆有倉、無 SL 的 fill 不進 DB → get_trade_history/pnl-summary 缺一筆(broker soft-SL 仍會接管部位)。
+            if (_db != null && (result.Status == "filled" || result.Status == "filled_no_sl")
+                && result.FilledQty > 0 && result.FilledPrice.HasValue)
             {
                 try
                 {

@@ -356,6 +356,30 @@ public class RiskEngine
             return new RiskCheckResult { Passed = true, OrderAction = "allow" };
         }
 
+        // finding H：開倉風控的 r14(per-trade max-loss)/ r16(daily CB)都依賴 snapshot.Balance。
+        // balance<=0 代表 get_account 查不到餘額(API hiccup / 認證問題)、無從跟「合法 0 餘額」區分,
+        // 此時 r14 的單筆損失上限會被整個跳過(任意大小都過 r14)、r16 的當日虧損% 也算不準 → 對開倉 fail-closed。
+        // 平倉已在上面 isClosing 短路放行、走不到這裡(擋出場才是真風險)。
+        if (!PerpBalanceVerifiableForOpen(snapshot.Balance))
+        {
+            return new RiskCheckResult
+            {
+                Passed = false,
+                OrderAction = "reject",
+                Violations = new List<RiskViolation>
+                {
+                    new RiskViolation
+                    {
+                        RuleId   = "rH",
+                        RuleName = "Perp Balance Unverifiable (fail-closed)",
+                        Message  = $"Account balance is {snapshot.Balance:F2} (unverifiable / not fetched) — cannot evaluate per-trade max-loss (r14) or daily-loss circuit-breaker (r16); rejecting open to avoid unguarded sizing.",
+                        Current  = snapshot.Balance,
+                        Limit    = 0m,
+                    }
+                },
+            };
+        }
+
         var violations = new List<RiskViolation>();
         var orderNotional = quantity * estimatedPrice;
 
@@ -386,6 +410,12 @@ public class RiskEngine
             ? new RiskCheckResult { Passed = true, OrderAction = "allow" }
             : new RiskCheckResult { Passed = false, OrderAction = "reject", Violations = violations };
     }
+
+    /// <summary>
+    /// finding H — 開倉時餘額是否可信(可拿來算 r14/r16)。balance&lt;=0 = get_account 查不到 → 不可驗證、
+    /// 對開倉 fail-closed。純函式、無 I/O、好單測;平倉不經過此閘(CheckPerp 已短路放行)。
+    /// </summary>
+    public static bool PerpBalanceVerifiableForOpen(decimal balance) => balance > 0m;
 
     private RiskViolation? CheckMaxLeverage(RiskRule rule, int leverage)
     {

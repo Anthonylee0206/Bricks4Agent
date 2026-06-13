@@ -129,6 +129,9 @@ public class AutoTraderService : BackgroundService
     // 2026-06-04:橋接「開倉路徑解析到的 signal StopPrice」→「保護 scan 的 SL init」。
     // key = {owner}:{exchange}:{symbol}:{side}(同 perp protection state key)。只在 UseSignalSl 腿填、平倉時清。
     private readonly ConcurrentDictionary<string, decimal> _signalSlByKey = new();
+    // finding J:hedge 模式同方向倉合併成 1 筆 position row、無法用筆數當加碼深度 → 改用 broker 本地累計加碼次數。
+    // key = {owner}:{exchange}:{symbol}:{side}(同 perp protection state key);平倉於 stale-key 清除迴圈一併清掉。
+    private readonly ConcurrentDictionary<string, int> _scaleInCountByKey = new();
     private readonly decimal _perpLiqEmergencyPct;
     private readonly decimal _dynamicRiskPct;   // 開倉時 max_loss 佔帳戶比例（預設 2%、對齊 r14）
     private readonly decimal _maxPortfolioRiskPct;  // 所有開倉 combined max_loss 上限（預設 6%、對齊 r16）
@@ -183,6 +186,13 @@ public class AutoTraderService : BackgroundService
     /// 預設 off（opt-in、不改既有行為）。env: AUTOTRADER_BRACKET_SL_ENABLED=true 開啟。
     /// </summary>
     private readonly bool _bracketSlEnabled;
+
+    /// <summary>
+    /// finding D — perp 組合層「equity 從當日峰值回落」熔斷(跟 r16「跌破當日開盤」互補)。
+    /// 預設 off(opt-in、比照 bracket SL「真錢危險、demo 驗證後再開」慣例,不偷改線上行為)。
+    /// env: AUTOTRADER_PERP_DD_CB=1 開啟,閾值沿用 _maxPortfolioDdPct(AUTOTRADER_MAX_PORTFOLIO_DD_PCT、預設 8%)。
+    /// </summary>
+    private readonly bool _perpDdCbEnabled;
 
     /// <summary>
     /// C — Bracket TP（opt-in）：開倉時帶 exchange-side take_profit_price，到價自動止盈。
@@ -578,6 +588,9 @@ public class AutoTraderService : BackgroundService
         _bracketSlEnabled = string.Equals(
             Environment.GetEnvironmentVariable("AUTOTRADER_BRACKET_SL_ENABLED") ?? "false",
             "true", StringComparison.OrdinalIgnoreCase);
+        // finding D — perp portfolio DD 熔斷（opt-in、預設 off,比照 bracket SL 慣例；閾值用 _maxPortfolioDdPct）
+        _perpDdCbEnabled = Environment.GetEnvironmentVariable("AUTOTRADER_PERP_DD_CB")
+            is "1" or "true" or "True" or "TRUE" or "on" or "ON";
         // C — Bracket TP（opt-in、預設 0 = 關，讓利潤跑）
         _bracketTpPct = ParsePctEnv("AUTOTRADER_BRACKET_TP_PCT", defaultValue: 0m, min: 0m, max: 500m);
         // Bracket TP R:R 倍數（opt-in、優先於固定 %）；0 = 退回固定 %
@@ -736,7 +749,8 @@ public class AutoTraderService : BackgroundService
     /// 觸發條件：DD% ≥ _maxPortfolioDdPct → Triggered=true，呼叫端要 skip 該 cycle 的下單。
     /// </summary>
     // 2026-05-27 真錢安全強化:CB 觸發推 Discord(per-exchange dedup、UTC 日重置、惡化 +2pp escalation)
-    private async Task TryPushCbAlertAsync(string exchange, CircuitBreakerEval cb, CancellationToken ct)
+    // scopeKey = dedup/state key(spot=exchange、perp=owner:exchange);displayLabel = 訊息顯示用(可讀的 exchange)
+    private async Task TryPushCbAlertAsync(string scopeKey, string displayLabel, CircuitBreakerEval cb, CancellationToken ct)
     {
         try
         {
@@ -744,7 +758,7 @@ public class AutoTraderService : BackgroundService
             var today = new DateTime(nowUtc.Year, nowUtc.Month, nowUtc.Day, 0, 0, 0, DateTimeKind.Utc);
             bool shouldAlert = false;
             decimal alertedDd = cb.DdPct;
-            _cbAlertedState.AddOrUpdate(exchange,
+            _cbAlertedState.AddOrUpdate(scopeKey,
                 _ => { shouldAlert = true; return (nowUtc, cb.DdPct); },
                 (_, prev) =>
                 {
@@ -758,7 +772,7 @@ public class AutoTraderService : BackgroundService
             var discord = DiscordNotify;
             if (discord == null) { _logger.LogDebug("CB alert: Discord disabled, skip push"); return; }
             var body =
-                $"⚠ **{exchange}** 當日 DD **{cb.DdPct:F2}%** ≥ 閾值 {cb.Threshold:F1}%、" +
+                $"⚠ **{displayLabel}** 當日 DD **{cb.DdPct:F2}%** ≥ 閾值 {cb.Threshold:F1}%、" +
                 $"新開倉已暫停(既有部位的 SL / peak-trail 保護鏈仍會跑、不會撤單)。\n\n" +
                 $"• Peak: `{cb.PeakValue:F2}`\n" +
                 $"• Current: `{cb.CurrentValue:F2}`\n" +
@@ -766,19 +780,21 @@ public class AutoTraderService : BackgroundService
                 $"**檢視:**dashboard `/trading-manage.html`\n" +
                 $"**完全停止(切真錢全平):** `POST /api/v1/emergency/stop-all`";
             await discord.SendAdHocAsync(
-                title: $"🚨 Circuit Breaker — {exchange} 當日 DD {cb.DdPct:F1}%",
+                title: $"🚨 Circuit Breaker — {displayLabel} 當日 DD {cb.DdPct:F1}%",
                 body: body,
                 color: 0xF6465D,
                 ct: ct);
-            _logger.LogInformation("CB Discord alert sent for {Exchange} DD={Dd:F2}%", exchange, cb.DdPct);
+            _logger.LogInformation("CB Discord alert sent for {Scope} DD={Dd:F2}%", scopeKey, cb.DdPct);
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "AutoTrader: failed to push CB Discord alert for {Exchange}", exchange);
+            _logger.LogWarning(ex, "AutoTrader: failed to push CB Discord alert for {Scope}", scopeKey);
         }
     }
 
-    public CircuitBreakerEval EvaluateCircuitBreaker(string exchange, decimal currentValue, DateTime nowUtc)
+    // scopeKey:spot 路徑傳 exchange("alpaca"/"binance");perp 路徑(finding D)傳 per-(owner:exchange)
+    // 否則同 exchange 不同用戶的 equity 會共用同一個 peak、互相污染 DD(對齊 r16 的 owner:exchange:date 隔離)。
+    public CircuitBreakerEval EvaluateCircuitBreaker(string scopeKey, decimal currentValue, DateTime nowUtc)
     {
         if (currentValue <= 0m)
         {
@@ -788,7 +804,7 @@ public class AutoTraderService : BackgroundService
 
         var todayUtc = new DateTime(nowUtc.Year, nowUtc.Month, nowUtc.Day, 0, 0, 0, DateTimeKind.Utc);
         var state = _peakByExchange.AddOrUpdate(
-            exchange,
+            scopeKey,
             _ => new PortfolioPeakState
             {
                 PeakValue = currentValue, PeakResetAt = todayUtc,
@@ -1449,6 +1465,7 @@ public class AutoTraderService : BackgroundService
                 {
                     DeletePersistedPerpState(k);
                     _signalSlByKey.TryRemove(k, out _);   // 2026-06-04:平倉清掉橋接的 signal stop
+                    _scaleInCountByKey.TryRemove(k, out _);   // finding J:全平 → 重置 scale-in 累計次數
                     _logger.LogInformation("Perp position {Key} closed — protection state cleaned", k);
                 }
             }
@@ -1628,6 +1645,28 @@ public class AutoTraderService : BackgroundService
         => riskWorkerAvailable ? PerpOpenRiskMode.RunRiskWorker
          : bracketSlEnabled    ? PerpOpenRiskMode.ProceedWithBracketSl
          :                       PerpOpenRiskMode.FailClosedBlock;
+
+    /// <summary>
+    /// finding C — 當日 PnL%（純算術、好測）。open&lt;=0(新帳戶/查不到)→ 0、不誤觸熔斷(沿用除零防呆)。
+    /// 純函式只算「%」,「該餵 equity 還是 balance」由呼叫端決定 —— 餵 equity 才能反映未實現浮虧(finding C 根因層)。
+    /// </summary>
+    public static decimal ComputeDayPnlPct(decimal current, decimal open)
+        => open <= 0m ? 0m : (current - open) / open * 100m;
+
+    /// <summary>
+    /// finding D — portfolio 熔斷的 scope key。spot 用 exchange、perp 用 owner:exchange(多用戶隔離,
+    /// 否則同 exchange 不同用戶的 equity peak 互相污染)。owner 空 → prn_dashboard。純函式、好測。
+    /// </summary>
+    public static string BuildCbScopeKey(string? ownerPrincipalId, string exchange)
+        => $"{(string.IsNullOrEmpty(ownerPrincipalId) ? "prn_dashboard" : ownerPrincipalId)}:{exchange}";
+
+    /// <summary>
+    /// finding J — scale-in 門檻的 existing 取 max(部位筆數, broker 累計加碼次數)。hedge 模式部位合併成 1 筆
+    /// → 筆數恆 ≤1、門檻凍結;改用累計次數讓門檻隨加碼深度累進。取 max 是 fail-safe:broker 重啟丟計數時
+    /// 至少還原成「有倉 → 至少 1」的舊行為(偏保守不偏放鬆)。純函式、好測。
+    /// </summary>
+    public static int ResolveScaleInExisting(int positionRowCount, int recordedScaleInCount)
+        => Math.Max(positionRowCount, recordedScaleInCount);
 
     /// <summary>
     /// 薄包裝:處理「外部相依」（env flag gate + 當前 5 分鐘時間桶）。
@@ -1993,7 +2032,8 @@ public class AutoTraderService : BackgroundService
                         AddLog(item, "halt",
                             $"⚠ Portfolio DD {cb.DdPct:F1}% ≥ {cb.Threshold}% on {exchange} (peak={cb.PeakValue:F2}, now={cb.CurrentValue:F2}) — order blocked");
                         // 2026-05-27 真錢安全強化:首次觸發 / DD 惡化 +2pp 推 Discord critical alert
-                        _ = TryPushCbAlertAsync(exchange, cb, ct);
+                        // spot:scopeKey 與 displayLabel 都用 exchange(單帳戶、無 per-user 需求)
+                        _ = TryPushCbAlertAsync(exchange, exchange, cb, ct);
                         return;
                     }
 
@@ -2208,8 +2248,10 @@ public class AutoTraderService : BackgroundService
     }
 
     /// <summary>
-    /// 取得 / 建立今日 UTC 開盤 balance（給 r16 daily_loss circuit breaker 用），
-    /// 計算 (current - today_open) / today_open × 100。
+    /// 取得 / 建立今日 UTC 開盤 equity（給 r16 daily_loss circuit breaker 用），
+    /// 計算 (current_equity - today_open_equity) / today_open_equity × 100。
+    /// finding C:尺必須用 equity(=balance+未實現浮虧),否則抱浮虧倉時 day_pnl% 算不出真實虧損、r16 永不觸發。
+    /// 當前值與當日開盤基準必須同尺(都 equity);PerpDailyOpenBalance.Balance 欄位沿用、語意改成「當日開盤 equity」。
     ///
     /// 邏輯：
     ///   - 若 (exchange, today UTC) 沒紀錄 → 寫一筆 today_open = current_balance、回 0%
@@ -2219,7 +2261,7 @@ public class AutoTraderService : BackgroundService
     /// broker 重啟也保留（持久化到 DB），UTC 跨日下個 cycle 自動寫新紀錄。
     /// 沒有特地重置舊紀錄、舊 row 累積在 DB 中、之後想做歷史趨勢可以用。
     /// </summary>
-    private decimal ComputePerpDayPnlPct(string ownerPrincipalId, string exchange, decimal currentBalance)
+    private decimal ComputePerpDayPnlPct(string ownerPrincipalId, string exchange, decimal currentEquity)
     {
         try
         {
@@ -2235,7 +2277,7 @@ public class AutoTraderService : BackgroundService
                 // 平滑遷移:單用戶時代的舊 row 是 {exchange}:{date}。若當日已有舊基準就沿用它,
                 // 不在部署當日把既有用戶的當日虧損基準重置成部署當下餘額(否則熔斷靈敏度被洗掉)。
                 var legacy = _db.Get<BrokerCore.Models.PerpDailyOpenBalance>($"{exchange}:{utcDate}");
-                var openingBalance = legacy != null && legacy.Balance > 0m ? legacy.Balance : currentBalance;
+                var openingBalance = legacy != null && legacy.Balance > 0m ? legacy.Balance : currentEquity;
                 _db.Insert(new BrokerCore.Models.PerpDailyOpenBalance
                 {
                     Key = key,
@@ -2247,11 +2289,9 @@ public class AutoTraderService : BackgroundService
                 _logger.LogInformation(
                     "Perp daily open balance recorded for {Owner}/{Ex} on {Date}: {Bal} USDT{Migrated}",
                     owner, exchange, utcDate, openingBalance, legacy != null ? " (sourced from legacy key)" : "");
-                if (openingBalance <= 0m) return 0m;
-                return (currentBalance - openingBalance) / openingBalance * 100m;
+                return ComputeDayPnlPct(currentEquity, openingBalance);
             }
-            if (existing.Balance <= 0m) return 0m;
-            return (currentBalance - existing.Balance) / existing.Balance * 100m;
+            return ComputeDayPnlPct(currentEquity, existing.Balance);
         }
         catch (Exception ex)
         {
@@ -2316,11 +2356,13 @@ public class AutoTraderService : BackgroundService
         {
             if (longQty > 0m)
             {
-                // 已有 long、評估是否符合 scale-in 門檻
-                var required = RequiredConfidence(sameSymbolLongs);
+                // 已有 long、評估是否符合 scale-in 門檻。finding J:用累計加碼次數(hedge 合併成 1 筆、筆數會凍結)。
+                var existingLong = ResolveScaleInExisting(sameSymbolLongs,
+                    _scaleInCountByKey.GetValueOrDefault($"{item.OwnerPrincipalId}:{item.Exchange}:{item.Symbol}:long"));
+                var required = RequiredConfidence(existingLong);
                 if (confidence >= required)
                 {
-                    perpAction = $"scale_in_long ({sameSymbolLongs}→{sameSymbolLongs+1}, conf {confidence:P0}≥{required:P0})";
+                    perpAction = $"scale_in_long ({existingLong}→{existingLong+1}, conf {confidence:P0}≥{required:P0})";
                     perpSide = "buy"; perpPosSide = "long"; reduceOnly = false;
                 }
                 else
@@ -2335,10 +2377,12 @@ public class AutoTraderService : BackgroundService
         {
             if (shortQty > 0m)
             {
-                var required = RequiredConfidence(sameSymbolShorts);
+                var existingShort = ResolveScaleInExisting(sameSymbolShorts,
+                    _scaleInCountByKey.GetValueOrDefault($"{item.OwnerPrincipalId}:{item.Exchange}:{item.Symbol}:short"));
+                var required = RequiredConfidence(existingShort);
                 if (confidence >= required)
                 {
-                    perpAction = $"scale_in_short ({sameSymbolShorts}→{sameSymbolShorts+1}, conf {confidence:P0}≥{required:P0})";
+                    perpAction = $"scale_in_short ({existingShort}→{existingShort+1}, conf {confidence:P0}≥{required:P0})";
                     perpSide = "sell"; perpPosSide = "short"; reduceOnly = false;
                 }
                 else
@@ -2378,7 +2422,7 @@ public class AutoTraderService : BackgroundService
 
             // 把 get_positions 結果整理成 risk-worker 接受的 perp snapshot 形狀
             var perpPositions = new List<object>();
-            decimal balance = 0m, available = 0m;
+            decimal balance = 0m, available = 0m, equity = 0m;  // equity = balance + 未實現浮虧(finding C/D 用)
             if (posDoc.TryGetProperty("positions", out var allPos) && allPos.ValueKind == JsonValueKind.Array)
             {
                 foreach (var pp in allPos.EnumerateArray())
@@ -2409,13 +2453,40 @@ public class AutoTraderService : BackgroundService
                 var ad = JsonDocument.Parse(accResult.ResultPayload ?? "{}").RootElement;
                 if (ad.TryGetProperty("balance",          out var bv))  balance   = bv.GetDecimal();
                 if (ad.TryGetProperty("available_margin", out var amv)) available = amv.GetDecimal();
+                if (ad.TryGetProperty("equity",           out var ev))  equity    = ev.GetDecimal();
             }
+            // finding C:equity 缺(舊 worker / 欄位沒回)→ 退回 balance(不比現況差;但 r16 仍看不到浮虧、bug 未修)。
+            // 部署前用 docker exec broker curl loopback 打一次 get_account 確認回應含非零 equity。
+            if (equity <= 0m) equity = balance;
 
             // 申報資金錨定：跌會收緊、漲不放寬。0 / 沒設 = 用實際 balance。
             var anchoredBalance = balance;
             var declared = ResolveDeclaredCapital(item.OwnerPrincipalId, item.Exchange);
             if (declared > 0m)
                 anchoredBalance = Math.Min(balance, declared);
+
+            // ── Portfolio circuit breaker (finding D)──
+            // 組合層 equity 從「當日峰值」回落 ≥ 閾值% → 全面停開新倉(既有部位 SL/peak-trail 不動)。
+            // 跟 r16(當日 loss-from-open)互補:r16 看「跌破開盤多少」、這條看「從盤中高點回落多少」。
+            // 餵 equity(=balance+未實現浮虧,跟 finding C 同尺)、不是 anchoredBalance,否則對盤中浮虧回吐視而不見。
+            // 多用戶:per-(owner:exchange) scope(BuildCbScopeKey),否則同 exchange 不同用戶 equity 互相污染 peak。
+            // 只擋全新 open / scale_in;平倉 reduceOnly 走不到這裡。opt-in(_perpDdCbEnabled、預設 off)。
+            if (_perpDdCbEnabled && equity > 0m
+                && (perpAction!.StartsWith("open_") || perpAction.StartsWith("scale_in_")))
+            {
+                var cbScope = BuildCbScopeKey(item.OwnerPrincipalId, item.Exchange);
+                var cb = EvaluateCircuitBreaker(cbScope, equity, DateTime.UtcNow);
+                if (cb.Triggered)
+                {
+                    _logger.LogWarning(
+                        "⚠ Perp circuit breaker on {Scope}: DD {Dd}% ≥ {Threshold}% (peak={Peak:F2}, now={Cur:F2}). Skipping {Symbol} {Action}.",
+                        cbScope, cb.DdPct, cb.Threshold, cb.PeakValue, cb.CurrentValue, item.Symbol, perpAction);
+                    AddLog(item, "halt",
+                        $"⚠ Portfolio equity DD {cb.DdPct:F1}% ≥ {cb.Threshold}% on {item.Exchange} (peak={cb.PeakValue:F2}, now={cb.CurrentValue:F2}) — perp open blocked");
+                    _ = TryPushCbAlertAsync(cbScope, item.Exchange, cb, ct);
+                    return;
+                }
+            }
 
             // ★ Dynamic position sizing（user request）：開倉時動態算 qty 讓 max_loss = balance × risk%
             //
@@ -2585,44 +2656,43 @@ public class AutoTraderService : BackgroundService
             }
             else if (_dynamicRiskPct > 0m && (perpAction!.StartsWith("open_") || perpAction.StartsWith("scale_in_")))
             {
-                if (anchoredBalance > 0m && markPrice > 0m && _protectionConfig.InitialSlPct > 0m)
+                // 已開倉的累計風險：每倉 notional × SL%（反射讀 anon 物件留在 caller、純函式只收算好的數字）
+                decimal existingRisk = 0m;
+                foreach (var pp in perpPositions)
                 {
-                    // 已開倉的累計風險：每倉 notional × SL%
-                    decimal existingRisk = 0m;
-                    foreach (var pp in perpPositions)
-                    {
-                        var notionalAnonProp = pp.GetType().GetProperty("notional")?.GetValue(pp);
-                        if (notionalAnonProp is decimal n)
-                            existingRisk += n * (_protectionConfig.InitialSlPct / 100m);
-                    }
-
-                    var perTradeMax = anchoredBalance * (_dynamicRiskPct / 100m);
-                    var portfolioMax = _maxPortfolioRiskPct > 0m
-                        ? anchoredBalance * (_maxPortfolioRiskPct / 100m)
-                        : decimal.MaxValue;
-                    var remainingBudget = portfolioMax - existingRisk;
-                    var allowedRisk = Math.Min(perTradeMax, Math.Max(0m, remainingBudget));
-
-                    if (allowedRisk <= 0m)
-                    {
-                        AddLog(item, "skip",
-                            $"portfolio risk budget exhausted: existing_risk={existingRisk:F2} ≥ portfolio_max={portfolioMax:F2} ({_maxPortfolioRiskPct}% of ${anchoredBalance:F2})");
-                        return;
-                    }
-
-                    var maxNotional = allowedRisk / (_protectionConfig.InitialSlPct / 100m);
-                    var dynamicQty = maxNotional / markPrice;
-                    _logger.LogInformation(
-                        "AutoTrader dynamic sizing {Symbol}: balance={Bal:F2} existing_risk={Exist:F2} budget={Budget:F2} allowed={All:F2} (per-trade {Pt:F2}, portfolio max {Pm:F2}) sl={Sl}% mark={Mark:F4} lev={Lev}x → notional={Not:F2} qty={Qty:F6} margin={Margin:F2}",
-                        item.Symbol, anchoredBalance, existingRisk, remainingBudget, allowedRisk,
-                        perTradeMax, portfolioMax, _protectionConfig.InitialSlPct, markPrice,
-                        item.Leverage, maxNotional, dynamicQty, maxNotional / Math.Max(item.Leverage, 1));
-                    qtyToUse = dynamicQty;
+                    var notionalAnonProp = pp.GetType().GetProperty("notional")?.GetValue(pp);
+                    if (notionalAnonProp is decimal n)
+                        existingRisk += n * (_protectionConfig.InitialSlPct / 100m);
                 }
-                else
+
+                // finding G:純算法抽到 ComputeDynamicRiskSizing(含保證金硬上限 clamp、對齊 ComputeExposureSizing)。
+                // 之前 inline 算 maxNotional=allowedRisk/SL% 沒 cap → 小 SL% + 低槓桿時 notional 爆保證金被拒單。
+                var sizing = ComputeDynamicRiskSizing(
+                    anchoredBalance, markPrice, _protectionConfig.InitialSlPct,
+                    existingRisk, _dynamicRiskPct, _maxPortfolioRiskPct, item.Leverage);
+
+                if (!sizing.Applicable)
                 {
                     _logger.LogWarning("AutoTrader dynamic sizing skipped {Symbol}: balance={Bal} mark={Mark} sl={Sl} (using watch.Quantity {Qty})",
                         item.Symbol, anchoredBalance, markPrice, _protectionConfig.InitialSlPct, qtyToUse);
+                }
+                else if (sizing.BudgetExhausted)
+                {
+                    AddLog(item, "skip",
+                        $"portfolio risk budget exhausted: existing_risk={existingRisk:F2} ≥ portfolio_max={sizing.PortfolioMax:F2} ({_maxPortfolioRiskPct}% of ${anchoredBalance:F2})");
+                    return;
+                }
+                else
+                {
+                    if (sizing.MarginClamped)
+                        AddLog(item, "info",
+                            $"dynamic sizing clamped to margin cap: → {sizing.AllowedNotional:F2} (balance ${anchoredBalance:F2} × {item.Leverage}x × 0.95)");
+                    _logger.LogInformation(
+                        "AutoTrader dynamic sizing {Symbol}: balance={Bal:F2} existing_risk={Exist:F2} allowed={All:F2} (per-trade {Pt:F2}, portfolio max {Pm:F2}) sl={Sl}% mark={Mark:F4} lev={Lev}x → notional={Not:F2} qty={Qty:F6} margin={Margin:F2}",
+                        item.Symbol, anchoredBalance, existingRisk, sizing.AllowedRisk,
+                        sizing.PerTradeMax, sizing.PortfolioMax, _protectionConfig.InitialSlPct, markPrice,
+                        item.Leverage, sizing.AllowedNotional, sizing.Qty, sizing.AllowedNotional / Math.Max(item.Leverage, 1));
+                    qtyToUse = sizing.Qty;
                 }
             }
 
@@ -2688,7 +2758,8 @@ public class AutoTraderService : BackgroundService
             if (openRiskMode == PerpOpenRiskMode.RunRiskWorker)
             {
                 // r16 daily loss circuit breaker：取「今日 UTC 開盤 balance」、算當日 PnL%
-                var dayPnlPct = ComputePerpDayPnlPct(item.OwnerPrincipalId, item.Exchange, balance);
+                // finding C:餵 equity(=balance+未實現浮虧)、不是 wallet balance,否則抱浮虧倉時 r16 永不觸發。
+                var dayPnlPct = ComputePerpDayPnlPct(item.OwnerPrincipalId, item.Exchange, equity);
 
                 var riskPayload = JsonSerializer.Serialize(new
                 {
@@ -2804,6 +2875,13 @@ public class AutoTraderService : BackgroundService
             AddLog(item, perpAction!, $"PERP {perpAction!.ToUpper()}: {extId} {perpSide} {qtyToUse} {item.Symbol} {item.Leverage}x → {status}");
             _logger.LogInformation("AutoTrader perp: {PerpAction} {Side} {Qty} {Symbol} on {Exchange} {Lev}x → {Status}",
                 perpAction, perpSide, qtyToUse, item.Symbol, item.Exchange, item.Leverage, status);
+            // finding I:進場成交但交易所 SL 沒掛上 → 明確告警,讓 broker soft-SL 保護鏈接管這個部位。
+            if (status == "filled_no_sl")
+            {
+                AddLog(item, "warn", $"⚠ 交易所端 SL 掛單失敗(進場已成交)— broker soft-SL 必須涵蓋 {item.Symbol} {perpPosSide}");
+                _logger.LogWarning("AutoTrader perp entry filled but exchange SL failed — broker soft-SL must cover {Symbol} {Pos} on {Exchange}",
+                    item.Symbol, perpPosSide, item.Exchange);
+            }
 
             // ── Slippage audit + C1 backoff trigger（filled_price vs signal markPrice）─
             // 當下單 — 已成交不可逆、不擋 dispatch；但同 symbol 下一個 open signal 進 backoff cooldown。
@@ -2832,7 +2910,13 @@ public class AutoTraderService : BackgroundService
             // Cooldown 紀錄：只在「成功開倉 / scale_in」更新時間戳；close / reduce-only 不更新
             // （平倉後立即反向開倉是合理場景、不該被 cooldown 擋）
             if (!reduceOnly && (perpAction!.StartsWith("open_") || perpAction.StartsWith("scale_in_")))
+            {
                 _lastEntryAt[$"{item.Exchange}:{item.Symbol}"] = DateTime.UtcNow;
+                // finding J:只在真的 scale_in 成功才 +1(open_ 不加、靠 ResolveScaleInExisting 的 max 兜底成 1,避免 off-by-one 把門檻多升一級)
+                if (perpAction.StartsWith("scale_in_"))
+                    _scaleInCountByKey.AddOrUpdate(
+                        $"{item.OwnerPrincipalId}:{item.Exchange}:{item.Symbol}:{perpPosSide}", 1, (_, v) => v + 1);
+            }
         }
         else
         {
@@ -2917,6 +3001,55 @@ public class AutoTraderService : BackgroundService
         if (clamped) allowedNotional = marginCap;
 
         return new ExposureSizingResult(true, false, clamped, allowedNotional / markPrice, allowedNotional, portfolioMaxNotional);
+    }
+
+    /// <summary>
+    /// 動態風險 sizing 純算法結果（finding G）。Applicable=false → 輸入無效、caller 退回固定量;
+    /// BudgetExhausted=true → 組合風險預算用完、caller skip;否則用 Qty 下單
+    /// (MarginClamped=true 表示 notional 被保證金硬上限砍過、避免被交易所拒單)。
+    /// </summary>
+    internal readonly record struct DynamicRiskSizingResult(
+        bool Applicable, bool BudgetExhausted, bool MarginClamped,
+        decimal Qty, decimal AllowedNotional, decimal AllowedRisk,
+        decimal PerTradeMax, decimal PortfolioMax);
+
+    /// <summary>
+    /// 動態風險 sizing(pure、好測):per-trade max_loss = balance × dynamicRiskPct%,
+    /// notional = allowedRisk / (slPct/100),夾在「組合風險預算」與「保證金硬上限 balance × leverage × 0.95」之內。
+    /// caller 已保證 dynamicRiskPct &gt; 0;existingRisk 由 caller 算好傳入(反射讀 anon 物件不放純函式裡)。
+    ///   - balance ≤ 0 或 mark ≤ 0 或 slPct ≤ 0 → Applicable=false(退回固定量)
+    ///   - 扣掉已開倉累計風險後預算 ≤ 0 → BudgetExhausted=true(略過)
+    ///   - 否則 Qty = allowedNotional / mark;notional 超過保證金 cap 就 clamp(MarginClamped=true)
+    /// finding G:之前 dynamic 路徑漏了這個 marginCap clamp(exposure 路徑有)→ 小 SL% + 低槓桿時 notional 爆保證金。
+    /// </summary>
+    internal static DynamicRiskSizingResult ComputeDynamicRiskSizing(
+        decimal anchoredBalance, decimal markPrice, decimal slPct,
+        decimal existingRisk, decimal dynamicRiskPct, decimal maxPortfolioRiskPct,
+        decimal leverage)
+    {
+        if (anchoredBalance <= 0m || markPrice <= 0m || slPct <= 0m)
+            return new DynamicRiskSizingResult(Applicable: false, false, false, 0m, 0m, 0m, 0m, 0m);
+
+        var perTradeMax = anchoredBalance * (dynamicRiskPct / 100m);
+        var portfolioMax = maxPortfolioRiskPct > 0m
+            ? anchoredBalance * (maxPortfolioRiskPct / 100m)
+            : decimal.MaxValue;
+        var remainingBudget = portfolioMax - existingRisk;
+        var allowedRisk = Math.Min(perTradeMax, Math.Max(0m, remainingBudget));
+
+        if (allowedRisk <= 0m)
+            return new DynamicRiskSizingResult(true, BudgetExhausted: true, false, 0m, 0m, 0m, perTradeMax, portfolioMax);
+
+        var allowedNotional = allowedRisk / (slPct / 100m);
+
+        // 保證金硬上限(對齊 ComputeExposureSizing):notional 不能超過 balance × leverage × 0.95、否則保證金不足被拒單。
+        // 小 SL% + 低槓桿時 risk 反推的 notional 會爆掉這條(notional 與 SL% 成反比)。
+        var marginCap = anchoredBalance * Math.Max(leverage, 1m) * 0.95m;
+        bool clamped = allowedNotional > marginCap;
+        if (clamped) allowedNotional = marginCap;
+
+        return new DynamicRiskSizingResult(true, false, clamped,
+            allowedNotional / markPrice, allowedNotional, allowedRisk, perTradeMax, portfolioMax);
     }
 
     internal static decimal LeverageAwareSlPct(decimal configuredSlPct, decimal leverage, bool disableCap = false)
