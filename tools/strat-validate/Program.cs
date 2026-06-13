@@ -75,12 +75,14 @@ bool twMode     = args.Contains("--twstocks");
 bool fxMode     = args.Contains("--fx");
 bool etfMode    = args.Contains("--etf");
 bool commoMode  = args.Contains("--commodities");
-bool yahooMode  = stocksMode || twMode || fxMode || etfMode || commoMode;   // 非 crypto perp:資料走 Yahoo、無 funding/retail_ls
+bool bondsMode  = args.Contains("--bonds");
+bool yahooMode  = stocksMode || twMode || fxMode || etfMode || commoMode || bondsMode;   // 非 crypto perp:資料走 Yahoo、無 funding/retail_ls
 if (stocksMode) Console.WriteLine("📈 --stocks:美股模式(Yahoo 日線、StockBarCache);funding/retail_ls 注入自動 skip");
 if (twMode)     Console.WriteLine("🇹🇼 --twstocks:台股模式(Yahoo .TW 日線);funding/retail_ls 注入自動 skip");
 if (fxMode)     Console.WriteLine("💱 --fx:外匯模式(Yahoo =X 日線);funding/retail_ls 注入自動 skip");
 if (etfMode)    Console.WriteLine("🧺 --etf:ETF 模式(廣指數+SPDR sector+國際;驗 ETF 有無獨立 edge)");
 if (commoMode)  Console.WriteLine("🛢️ --commodities:商品/期貨模式(Yahoo =F 日線、連續近月;金屬/能源/農產/股指期/債期);funding/retail_ls 自動 skip");
+if (bondsMode)  Console.WriteLine("🏦 --bonds:債券/利率模式(多天期國債 ETF + 期貨;驗 harmonic 在利率資產=第5市場?跟股/幣/商品/FX ≈0 相關);funding/retail_ls 自動 skip");
 
 string[] symbols = etfMode
     ? new[]
@@ -130,6 +132,15 @@ string[] symbols = etfMode
         // 外匯主流對 + 交叉盤(Yahoo =X 格式)— harmonic 源自 FX/股票 TA、先驗 majors
         "EURUSD=X","USDJPY=X","GBPUSD=X","USDCHF=X","AUDUSD=X","USDCAD=X","NZDUSD=X",  // 7 majors
         "EURJPY=X","GBPJPY=X","EURGBP=X","AUDJPY=X",                                    // 4 crosses
+    }
+    : bondsMode
+    ? new[]
+    {
+        // 債券/利率(多天期美國國債 ETF + 期貨、Yahoo)— 驗 harmonic 在利率資產類是否成立 = 潛在第 5 個 ≈0 相關市場。
+        // 長天期探針(ZB=F 30Y)顯示 harmonic OOS Sharpe 0.76;這裡擴成全曲線看穩不穩。
+        // ⚠️ 國債本質≈單因子(利率)、彼此高相關 → per-symbol 廣度意義有限、重點是 harmonic 抓不抓得到利率反轉。
+        "TLT","EDV","TLH","IEF","IEI","SHY",          // 國債 ETF:20Y+/25Y+/10-20Y/7-10Y/3-7Y/1-3Y
+        "ZB=F","ZN=F","ZF=F","ZT=F",                  // 國債期:30Y/10Y/5Y/2Y
     }
     : commoMode
     ? new[]
