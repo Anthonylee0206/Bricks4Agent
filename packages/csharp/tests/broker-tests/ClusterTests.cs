@@ -85,6 +85,20 @@ public static class ClusterTests
         var tagPartial = AutoTraderService.StableCloseTag("Partial exit 50% (long) @ 70000.0 (P&L +7.7%)");
         Check("closetag-diff-category→diff-tag", tagNow != tagPartial);
 
+        // ---- ResolvePerpOpenRiskMode（finding A）:perp 開倉風控的純決策、真錢 fail-open/fail-closed 核心 ----
+        //      broker-local 閘已在外面一律執行;這函式只決定 r14/r16 那段 + 離線時放不放行。
+        // risk-worker 在線 → 一律跑 r14/r16（不管 bracket SL 開不開）
+        Check("riskmode-online→run-riskworker",
+            AutoTraderService.ResolvePerpOpenRiskMode(true, false) == AutoTraderService.PerpOpenRiskMode.RunRiskWorker);
+        Check("riskmode-online-slon→run-riskworker",
+            AutoTraderService.ResolvePerpOpenRiskMode(true, true) == AutoTraderService.PerpOpenRiskMode.RunRiskWorker);
+        // 離線 + bracket SL 已啟用 → 放行（交易所端 SL 近似涵蓋 r14、不誤 halt 生產）
+        Check("riskmode-offline-slon→proceed",
+            AutoTraderService.ResolvePerpOpenRiskMode(false, true) == AutoTraderService.PerpOpenRiskMode.ProceedWithBracketSl);
+        // 離線 + bracket SL 未啟用 → 無 r14/r16 又無交易所止損 = 真裸倉 → fail-closed 擋（finding A 的安全底線）
+        Check("riskmode-offline-sloff→fail-closed",
+            AutoTraderService.ResolvePerpOpenRiskMode(false, false) == AutoTraderService.PerpOpenRiskMode.FailClosedBlock);
+
         Console.WriteLine($"--- Cluster: {passed} passed, {failed} failed ---");
         return (passed, failed);
     }

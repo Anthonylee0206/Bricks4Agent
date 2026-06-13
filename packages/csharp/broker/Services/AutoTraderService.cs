@@ -1611,6 +1611,24 @@ public class AutoTraderService : BackgroundService
     public static string StableCloseTag(string reason)
         => System.Text.RegularExpressions.Regex.Replace(reason ?? string.Empty, @"[-+]?\d[\d.,%]*", "#");
 
+    /// <summary>finding A — perp 開倉「需不需要 risk-worker / 能不能放行」的三種模式。</summary>
+    public enum PerpOpenRiskMode
+    {
+        RunRiskWorker,        // risk-worker 在線 → 跑 r14/r16 pre_perp_order
+        ProceedWithBracketSl, // 離線 + bracket SL 已啟用 → 放行(交易所端 SL 近似涵蓋 r14 per-trade 損失)
+        FailClosedBlock,      // 離線 + bracket SL 未啟用 → 無 r14/r16 又無交易所止損 = 真裸倉 → 擋下
+    }
+
+    /// <summary>
+    /// finding A — perp 開倉風控模式的純決策（解耦合、好測:無 I/O、無 env）。broker-local 閘
+    /// (max倉/相關性/funding/sizing/pre-flight)在三種模式下都已先執行（在此函式之外、一律跑）。
+    /// 這裡只決定「r14/r16 那段」怎麼處理:在線就跑;離線時靠 bracket SL 撐 → 有開就放行、沒開就 fail-closed。
+    /// </summary>
+    public static PerpOpenRiskMode ResolvePerpOpenRiskMode(bool riskWorkerAvailable, bool bracketSlEnabled)
+        => riskWorkerAvailable ? PerpOpenRiskMode.RunRiskWorker
+         : bracketSlEnabled    ? PerpOpenRiskMode.ProceedWithBracketSl
+         :                       PerpOpenRiskMode.FailClosedBlock;
+
     /// <summary>
     /// 薄包裝:處理「外部相依」（env flag gate + 當前 5 分鐘時間桶）。
     /// **預設啟用**（finding K）:BingX clientOrderID 去重已 live 驗證（code=101400）、且 spot 路徑本就一律開,
@@ -2341,10 +2359,14 @@ public class AutoTraderService : BackgroundService
 
         // ── Risk gate（只擋開倉、平倉永遠放行）──
         // 平倉（reduceOnly=true）必須一律允許——擋出場才是真風險。
-        // 開倉前 fetch mark price 估名目、把現有 positions 一起餵給 risk-worker 的 pre_perp_order。
-        // 提到 method scope、給後面 slippage audit 用
+        // finding A 修:broker-local 風控閘（fetch mark price / sizing / max倉 / 相關性 / funding /
+        //   regime / cooldown / slippage / pre-flight / 區塊外的 bracket SL）一律執行、**不再綁
+        //   risk-worker 在線**。只有 r14/r16 的 pre_perp_order dispatch 真的需要 risk-worker（見下方
+        //   內層 if）。之前整段綁 HasAvailableWorker("risk.check") → risk-worker 離線（重啟是常態）
+        //   時整批跳過 → markPrice=0 → 連 bracket SL 都沒掛 → 固定量裸倉。
+        // markPrice 提到 method scope、給後面 slippage audit + bracket SL 用。
         decimal markPrice = 0m;
-        if (!reduceOnly && _registry.HasAvailableWorker("risk.check"))
+        if (!reduceOnly)
         {
             var mpResult = await _dispatcher.DispatchAsync(BuildRequest("trading.perpetual", "get_mark_price",
                 JsonSerializer.Serialize(new { exchange = item.Exchange, symbol = item.Symbol })));
@@ -2649,41 +2671,65 @@ public class AutoTraderService : BackgroundService
                     _logger.LogInformation("AutoTrader pre-flight warning {Sym}: {Warn}", item.Symbol, preWarn);
             }
 
-            // r16 daily loss circuit breaker：取「今日 UTC 開盤 balance」、算當日 PnL%
-            var dayPnlPct = ComputePerpDayPnlPct(item.OwnerPrincipalId, item.Exchange, balance);
-
-            var riskPayload = JsonSerializer.Serialize(new
+            // ── risk-worker 端風控（r14 per-trade max-loss / r16 daily CB / pre_perp_order）──
+            // finding A:**只有這段真的需要 risk-worker**。broker-local 閘 + sizing 已在上面一律執行。
+            //   risk-worker 在線時行為完全不變;離線時(見 else):qty 仍 sized、max倉/相關性/funding 仍擋,
+            //   只少 r14/r16,而 r14 per-trade 損失上限由交易所端 bracket SL 近似涵蓋 —— 但這個「不裸奔」
+            //   保證只在 bracket SL 已啟用時成立,所以 else 分支會在「離線 且 SL 未啟用」時 fail-closed 擋開倉。
+            var openRiskMode = ResolvePerpOpenRiskMode(_registry.HasAvailableWorker("risk.check"), _bracketSlEnabled);
+            if (openRiskMode == PerpOpenRiskMode.FailClosedBlock)
             {
-                symbol        = item.Symbol,
-                exchange      = item.Exchange,
-                side          = perpSide,
-                position_side = perpPosSide,
-                quantity      = qtyToUse,
-                price         = markPrice,
-                leverage      = item.Leverage,
-                initial_sl_pct = _protectionConfig.InitialSlPct,   // 給 r14 max_loss_per_trade_pct 用
-                perp = new { balance = anchoredBalance, available_margin = available, day_pnl_pct = dayPnlPct, positions = perpPositions },
-            });
-            var riskResult = await _dispatcher.DispatchAsync(BuildRequest("risk.check", "pre_perp_order", riskPayload));
-            if (riskResult.Success)
-            {
-                var riskDoc = JsonDocument.Parse(riskResult.ResultPayload ?? "{}").RootElement;
-                var passed = riskDoc.TryGetProperty("passed", out var rp) && rp.GetBoolean();
-                if (!passed)
-                {
-                    var msgs = new List<string>();
-                    if (riskDoc.TryGetProperty("violations", out var vs) && vs.ValueKind == JsonValueKind.Array)
-                    {
-                        foreach (var v in vs.EnumerateArray())
-                            if (v.TryGetProperty("message", out var vm)) msgs.Add(vm.GetString() ?? "");
-                    }
-                    var summary = msgs.Count > 0 ? string.Join("; ", msgs) : "perp risk rejected";
-                    AddLog(item, "blocked", $"PERP risk blocked: {summary}");
-                    _logger.LogWarning("AutoTrader perp risk blocked {Symbol} on {Exchange}: {Msg}", item.Symbol, item.Exchange, summary);
-                    return;
-                }
+                // 離線 且 bracket SL 未啟用 → 無 r14/r16 又無交易所止損 = 真裸倉 → fail-closed 擋下。
+                // 只擋這個組合;bracket SL 有開(生產)就照放、不誤 halt。平倉 reduceOnly 走不到這裡、永遠放行。
+                AddLog(item, "blocked", "risk-worker 離線 且 bracket SL 未啟用(AUTOTRADER_BRACKET_SL_ENABLED≠true):開倉會是無止損裸倉 → fail-closed 擋下。平倉不受影響。");
+                _logger.LogWarning("AutoTrader perp open BLOCKED (fail-closed): risk-worker offline AND bracket SL disabled → would be naked entry (no r14/r16, no exchange SL). {Symbol} on {Exchange}", item.Symbol, item.Exchange);
+                return;
             }
-            // riskResult.Success == false → risk-worker 不在線；保留 fail-open 行為跟 spot 路徑一致
+            if (openRiskMode == PerpOpenRiskMode.RunRiskWorker)
+            {
+                // r16 daily loss circuit breaker：取「今日 UTC 開盤 balance」、算當日 PnL%
+                var dayPnlPct = ComputePerpDayPnlPct(item.OwnerPrincipalId, item.Exchange, balance);
+
+                var riskPayload = JsonSerializer.Serialize(new
+                {
+                    symbol        = item.Symbol,
+                    exchange      = item.Exchange,
+                    side          = perpSide,
+                    position_side = perpPosSide,
+                    quantity      = qtyToUse,
+                    price         = markPrice,
+                    leverage      = item.Leverage,
+                    initial_sl_pct = _protectionConfig.InitialSlPct,   // 給 r14 max_loss_per_trade_pct 用
+                    perp = new { balance = anchoredBalance, available_margin = available, day_pnl_pct = dayPnlPct, positions = perpPositions },
+                });
+                var riskResult = await _dispatcher.DispatchAsync(BuildRequest("risk.check", "pre_perp_order", riskPayload));
+                if (riskResult.Success)
+                {
+                    var riskDoc = JsonDocument.Parse(riskResult.ResultPayload ?? "{}").RootElement;
+                    var passed = riskDoc.TryGetProperty("passed", out var rp) && rp.GetBoolean();
+                    if (!passed)
+                    {
+                        var msgs = new List<string>();
+                        if (riskDoc.TryGetProperty("violations", out var vs) && vs.ValueKind == JsonValueKind.Array)
+                        {
+                            foreach (var v in vs.EnumerateArray())
+                                if (v.TryGetProperty("message", out var vm)) msgs.Add(vm.GetString() ?? "");
+                        }
+                        var summary = msgs.Count > 0 ? string.Join("; ", msgs) : "perp risk rejected";
+                        AddLog(item, "blocked", $"PERP risk blocked: {summary}");
+                        _logger.LogWarning("AutoTrader perp risk blocked {Symbol} on {Exchange}: {Msg}", item.Symbol, item.Exchange, summary);
+                        return;
+                    }
+                }
+                // riskResult.Success == false → risk-worker 在線但回錯；保留 fail-open 行為跟 spot 路徑一致
+            }
+            else // ProceedWithBracketSl:risk-worker 離線、但 bracket SL 已啟用 → 放行(交易所端 SL 守)
+            {
+                // r14/r16 跳過,但 broker-local 閘已執行 + bracket SL 會在下面掛上(markPrice 已有值)。
+                // 「無 SL 的裸倉」組合在前面 FailClosedBlock 已擋掉、走不到這裡。明確記錄供 audit。
+                AddLog(item, "warn", "risk-worker 離線:r14/r16/pre_perp_order 跳過(broker-local 閘 + bracket SL 仍生效);新開倉風險由交易所端 SL 與本地硬上限保護");
+                _logger.LogWarning("AutoTrader perp open without risk-worker validation (r14/r16 skipped) {Symbol} on {Exchange} — broker-local gates + bracket SL still applied", item.Symbol, item.Exchange);
+            }
         }
 
         // 真開單——帶 user credential 才會走到 user 自己的帳戶
