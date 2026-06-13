@@ -1603,13 +1603,24 @@ public class AutoTraderService : BackgroundService
     }
 
     /// <summary>
-    /// 薄包裝:處理「外部相依」（env flag gate + 當前 5 分鐘時間桶）;flag off → null（現狀不變）。
-    /// gated:env AUTOTRADER_IDEMPOTENT_KEYS=1 才啟用。5 分鐘桶覆蓋 failover 窗口、桶換了=新意圖。
+    /// finding B — 把平倉 reason 內的浮動數字（價格/pnl%、每輪都變）抽成 # 只留語意類別
+    /// （"SL hit"/"Partial exit"/...），得到「同一平倉意圖 → 同字串」的穩定冪等 tag。
+    /// 否則 failover 重送算出不同 key → BingX 不去重 → 重複平倉。純函式、好測
+    /// （解耦合:把 idempotency tag 規則從 I/O 路徑抽離出來、可單獨驗證）。
+    /// </summary>
+    public static string StableCloseTag(string reason)
+        => System.Text.RegularExpressions.Regex.Replace(reason ?? string.Empty, @"[-+]?\d[\d.,%]*", "#");
+
+    /// <summary>
+    /// 薄包裝:處理「外部相依」（env flag gate + 當前 5 分鐘時間桶）。
+    /// **預設啟用**（finding K）:BingX clientOrderID 去重已 live 驗證（code=101400）、且 spot 路徑本就一律開,
+    /// perp 不開 = failover 重送會雙開倉/重複平倉的不對稱缺口。緊急可設 AUTOTRADER_IDEMPOTENT_KEYS=0
+    /// 退回隨機 key。5 分鐘桶覆蓋 failover 窗口、桶換了=新意圖。
     /// </summary>
     private static string? BuildIdemKey(string prefix, string owner, string exchange, string symbol, string side, string tag)
     {
         var flag = Environment.GetEnvironmentVariable("AUTOTRADER_IDEMPOTENT_KEYS");
-        if (flag is not ("1" or "true" or "True" or "TRUE")) return null;
+        if (flag is "0" or "false" or "False" or "FALSE" or "off" or "OFF") return null; // 緊急關閉開關
         var bucket = DateTimeOffset.UtcNow.ToUnixTimeSeconds() / 300;
         return DeriveIdemKey(prefix, owner, exchange, symbol, side, tag, bucket);
     }
@@ -1627,8 +1638,9 @@ public class AutoTraderService : BackgroundService
         var creds = BuildCredentialsObject(ownerPrincipalId, exchange);
         // 平倉也把該 watch 的 strategy 帶上、SaveTrade 才能把這筆 close trade 歸到原策略
         var watchStrategy = _watchList.TryGetValue(watchKey, out var wWatch) ? wWatch.Strategy : null;
-        // 冪等 key（gated:AUTOTRADER_IDEMPOTENT_KEYS=1 才非 null）:同一平倉意圖 → 同 key → failover 重送被 BingX 擋（code=101400）
-        var idemKey = BuildIdemKey("cl", ownerPrincipalId, exchange, symbol, side, reason);
+        // 冪等 key:同一平倉意圖 → 同 key → failover 重送被 BingX 擋（code=101400）。
+        // finding B 修:reason 含浮動價/pnl% → 用 StableCloseTag 抽掉數字、只留語意類別當穩定 tag。
+        var idemKey = BuildIdemKey("cl", ownerPrincipalId, exchange, symbol, side, StableCloseTag(reason));
         var orderPayload = creds == null
             ? JsonSerializer.Serialize(new
             {
@@ -1646,10 +1658,23 @@ public class AutoTraderService : BackgroundService
         var result = await _dispatcher.DispatchAsync(BuildRequest("trading.perpetual", "place_order", orderPayload));
         if (result.Success)
         {
-            _logger.LogInformation("🛡 Perp protection close: {Symbol} {Side}({OrdSide}) {Qty} on {Exchange} — {Reason}",
-                symbol, side, orderSide, qty, exchange, reason);
-            if (_watchList.TryGetValue(watchKey, out var wi))
-                AddLog(wi, "protect", $"perp close {side.ToUpper()} {qty} — {reason}");
+            // finding E:BingX 回 idempotent_duplicate（code=101400）= 此平倉意圖先前已送出、本次未產生新動作。
+            // 之前 broker 一律當成「剛成功平倉」記錄 → 重送會被誤記成第二次真實平倉。分流記錄(audit 可見)、不灌假動作。
+            var wasDuplicate = result.ResultPayload?.Contains("idempotent_duplicate", StringComparison.OrdinalIgnoreCase) == true;
+            if (wasDuplicate)
+            {
+                _logger.LogWarning("🛡 Perp protection close — BingX idempotent_duplicate(此意圖先前已送出、無新動作):{Symbol} {Side} {Qty} on {Exchange} — {Reason}",
+                    symbol, side, qty, exchange, reason);
+                if (_watchList.TryGetValue(watchKey, out var wiDup))
+                    AddLog(wiDup, "protect", $"perp close {side.ToUpper()} {qty} (idempotent dup — 已由先前送出處理) — {reason}");
+            }
+            else
+            {
+                _logger.LogInformation("🛡 Perp protection close: {Symbol} {Side}({OrdSide}) {Qty} on {Exchange} — {Reason}",
+                    symbol, side, orderSide, qty, exchange, reason);
+                if (_watchList.TryGetValue(watchKey, out var wi))
+                    AddLog(wi, "protect", $"perp close {side.ToUpper()} {qty} — {reason}");
+            }
             return true;
         }
         _logger.LogWarning("Perp protection close failed: {Symbol} {Side} {Qty} on {Exchange} — {Error}",

@@ -69,6 +69,22 @@ public static class ClusterTests
         Check("idem-len≤36", k1.Length <= 36);
         Check("idem-prefix-format", k1.StartsWith("op-"));
 
+        // ---- StableCloseTag（finding B）:平倉冪等 tag 必須抽掉浮動價/pnl%、否則 failover 重送不去重 → 重複平倉 ----
+        //      核心:同一平倉意圖、只有價格/pnl 數字不同 → 抽完後同 tag → 同 key（會被 BingX 擋住第二次）。
+        var reasonNow = "SL hit (long) @ 64321.5 ≤ 64500.0 (entry 65000.0, P&L -1.05%)";
+        var reasonResend = "SL hit (long) @ 64310.2 ≤ 64500.0 (entry 65000.0, P&L -1.06%)"; // 重送時行情飄了一點
+        var tagNow = AutoTraderService.StableCloseTag(reasonNow);
+        var tagResend = AutoTraderService.StableCloseTag(reasonResend);
+        Check("closetag-same-intent-diff-price→same-tag", tagNow == tagResend);
+        var keyNow = AutoTraderService.DeriveIdemKey("cl", "prn_a", "bingx", "BTC-USDT", "long", tagNow, 999L);
+        var keyResend = AutoTraderService.DeriveIdemKey("cl", "prn_a", "bingx", "BTC-USDT", "long", tagResend, 999L);
+        Check("closetag-same-intent→same-idemkey", keyNow == keyResend); // ← B 修好的證據:重送撞同 key
+        // 抽完後不該還留任何數字（否則就不穩定）
+        Check("closetag-no-digits-left", !tagNow.Any(char.IsDigit));
+        // 不同平倉類別（SL vs 部分止盈）→ 不同 tag → 不同 key（不會把兩種意圖誤判成同一次重送）
+        var tagPartial = AutoTraderService.StableCloseTag("Partial exit 50% (long) @ 70000.0 (P&L +7.7%)");
+        Check("closetag-diff-category→diff-tag", tagNow != tagPartial);
+
         Console.WriteLine($"--- Cluster: {passed} passed, {failed} failed ---");
         return (passed, failed);
     }
