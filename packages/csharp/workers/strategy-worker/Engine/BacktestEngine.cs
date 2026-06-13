@@ -367,7 +367,8 @@ public class BacktestEngine
         decimal commission = 0.001m,
         decimal slippagePct = 0m,
         bool applyFunding = false,
-        decimal forcedStopPct = 0m)  // 強制固定停損 %(對照「有停損 vs 無停損」用;0=無停損、抱到反向訊號)
+        decimal forcedStopPct = 0m,  // 強制固定停損 %(對照「有停損 vs 無停損」用;0=無停損、抱到反向訊號)
+        int embargoBars = 0)         // #1 LdP embargo:train↔test 間插 gap、排除邊界序列相關洩漏(0=關、預設行為不變)
     {
         var result = new WalkForwardResult
         {
@@ -378,7 +379,7 @@ public class BacktestEngine
             Stride    = stride,
         };
 
-        var requiredPerFold = trainBars + testBars;
+        var requiredPerFold = trainBars + embargoBars + testBars;
         if (bars.Count < requiredPerFold) return result;
         if (trainBars < 50 || testBars < 10 || stride < 1) return result;
 
@@ -387,17 +388,17 @@ public class BacktestEngine
         for (int start = 0; start + requiredPerFold <= bars.Count; start += stride)
         {
             var trainSlice = bars.GetRange(start, trainBars);
-            var testSlice  = bars.GetRange(start + trainBars, testBars);
+            var testSlice  = bars.GetRange(start + trainBars + embargoBars, testBars);   // embargo:test 起點往後推 gap、排除邊界序列相關
 
             // 訓練窗：直接跑 backtest
             var trainBt = Run(strategy, trainSlice, config, initialCash, commission,
                 slippagePct: slippagePct, applyFunding: applyFunding, forcedStopPct: forcedStopPct);
-            // 測試窗（OOS）：餵 [train+test] 整段、但只從 test 起點開始交易（tradeStartIndex=trainBars）。
-            // 這樣指標在 test 區間有完整 train 當 warmup（不被截斷）、又不偷看 test 內未來——
+            // 測試窗（OOS）：餵 [train+embargo+test] 整段、但只從 test 起點開始交易（tradeStartIndex=trainBars+embargoBars）。
+            // 這樣指標在 test 區間有完整 train(+embargo gap)當 warmup（不被截斷）、又不偷看 test 內未來——
             // 修掉「bare 90 根 test slice 害 MinBars>90 的策略永遠 hold / 指標被截斷」的方法學 bug。
-            var testWindow = bars.GetRange(start, trainBars + testBars);
+            var testWindow = bars.GetRange(start, trainBars + embargoBars + testBars);
             var testBt  = Run(strategy, testWindow, config, initialCash, commission,
-                tradeStartIndex: trainBars, slippagePct: slippagePct, applyFunding: applyFunding,
+                tradeStartIndex: trainBars + embargoBars, slippagePct: slippagePct, applyFunding: applyFunding,
                 forcedStopPct: forcedStopPct);
 
             result.Folds.Add(new WalkForwardFold

@@ -346,14 +346,15 @@ public static class LongShortBacktestEngine
         bool volTargetSizing = false,      // Q1.2 vol-targeting(透傳 Run)
         decimal volTargetAnnual = 0.60m,
         int volTargetLookback = 30,
-        decimal volTargetMaxScalar = 2.0m)
+        decimal volTargetMaxScalar = 2.0m,
+        int embargoBars = 0)   // #1 LdP embargo:train↔test 間插 gap、排除邊界序列相關洩漏(0=關、預設行為不變)
     {
         var result = new BacktestEngine.WalkForwardResult
         {
             Strategy = strategy.Name, Symbol = config.Symbol,
             TrainBars = trainBars, TestBars = testBars, Stride = stride,
         };
-        var requiredPerFold = trainBars + testBars;
+        var requiredPerFold = trainBars + embargoBars + testBars;
         if (bars.Count < requiredPerFold || trainBars < 50 || testBars < 10 || stride < 1) return result;
 
         int foldIdx = 0;
@@ -361,9 +362,9 @@ public static class LongShortBacktestEngine
         {
             var trainSlice = bars.GetRange(start, trainBars);
             var trainBt = Run(strategy, trainSlice, config, initialCash, commission, slippagePct: slippagePct, confidenceSizing: confidenceSizing, atrTrailMultiplier: atrTrailMultiplier, atrPeriod: atrPeriod, defaultInitialSlPct: defaultInitialSlPct, peakTrailTriggerPct: peakTrailTriggerPct, peakTrailDistancePct: peakTrailDistancePct, beTriggerPct: beTriggerPct, beBufferPct: beBufferPct, applyFunding: applyFunding, volTargetSizing: volTargetSizing, volTargetAnnual: volTargetAnnual, volTargetLookback: volTargetLookback, volTargetMaxScalar: volTargetMaxScalar);
-            var testWindow = bars.GetRange(start, trainBars + testBars);
+            var testWindow = bars.GetRange(start, trainBars + embargoBars + testBars);   // embargo gap 也餵進來當 warm-up、但不交易
             var testBt = Run(strategy, testWindow, config, initialCash, commission,
-                tradeStartIndex: trainBars, slippagePct: slippagePct, confidenceSizing: confidenceSizing,
+                tradeStartIndex: trainBars + embargoBars, slippagePct: slippagePct, confidenceSizing: confidenceSizing,
                 atrTrailMultiplier: atrTrailMultiplier, atrPeriod: atrPeriod, defaultInitialSlPct: defaultInitialSlPct,
                 peakTrailTriggerPct: peakTrailTriggerPct, peakTrailDistancePct: peakTrailDistancePct, beTriggerPct: beTriggerPct, beBufferPct: beBufferPct, applyFunding: applyFunding,
                 volTargetSizing: volTargetSizing, volTargetAnnual: volTargetAnnual, volTargetLookback: volTargetLookback, volTargetMaxScalar: volTargetMaxScalar);
@@ -371,7 +372,7 @@ public static class LongShortBacktestEngine
             {
                 FoldIndex = foldIdx++,
                 TrainStart = trainSlice.First().OpenTime, TrainEnd = trainSlice.Last().OpenTime,
-                TestStart = bars[start + trainBars].OpenTime, TestEnd = bars[start + trainBars + testBars - 1].OpenTime,
+                TestStart = bars[start + trainBars + embargoBars].OpenTime, TestEnd = bars[start + trainBars + embargoBars + testBars - 1].OpenTime,
                 Train = trainBt, Test = testBt,
             });
         }

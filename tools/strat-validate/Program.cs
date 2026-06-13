@@ -39,6 +39,15 @@ decimal slPct = decimal.TryParse(args.FirstOrDefault(a => a.StartsWith("--sl="))
 // 注意:LS 引擎只在 conf≥0.6 才開倉、故 scale 實際範圍 0.6-1.0(溫和);引擎版無 floor(live 版 floor 0.3)
 bool confSizing = args.Contains("--conf-sizing");
 if (confSizing) Console.WriteLine("📐 --conf-sizing:部位 × signal.Confidence(forecast-strength sizing 實驗、對照固定倉位)");
+// #1 LdP purge+embargo(文獻落地):walk-forward 兩道防洩漏 ——
+//   ① embargo:train↔test 間插 gap 根(排除邊界序列相關洩漏)
+//   ② 非重疊 OOS:stride ≥ testBars(舊 stride60<test90 → 相鄰 fold 重疊 30 根、重疊報酬直接灌 t-stat = doc 的「重疊報酬洩漏」)
+//   預設 ON(embargo 5、stride 90);--legacy-wf 還原舊版(embargo0/stride60)做 A/B 對照量化洩漏多少。
+bool legacyWf = args.Contains("--legacy-wf");
+int gEmbargo = legacyWf ? 0 : (int.TryParse(args.FirstOrDefault(a => a.StartsWith("--embargo="))?.Substring(10), out var emv) && emv >= 0 ? emv : 5);
+int gWfStride = legacyWf ? 60 : 90;   // 非重疊:stride = testBars(90)→ 相鄰 OOS 測試窗不重疊
+if (legacyWf) Console.WriteLine("⚠️ --legacy-wf:walk-forward 用舊設定(embargo 0、stride 60、相鄰 OOS 重疊 30 根)做 A/B 對照");
+else Console.WriteLine($"🧪 walk-forward 防洩漏(LdP #1):embargo {gEmbargo} 根 gap + 非重疊 stride {gWfStride}(顯著性閘+主表;--legacy-wf 還原舊版對照)");
 // --conf-diag:confidence 校準診斷(Q1 開放項)— per-trade entry confidence vs 實際 PnlPct。
 // 答「confidence 有沒有預測力(分桶單調?corr≠0?)+ 跨策略可不可比(分布重疊?)」。用 full-sample(對找關係有利、null 結果更強)。
 bool confDiag = args.Contains("--conf-diag");
@@ -800,7 +809,7 @@ Dictionary<string, Dictionary<string, List<decimal>>> PrintTable(
     Func<IStrategy, List<BarData>, StrategyConfig, BacktestEngine.WalkForwardResult> wf,
     Func<IStrategy, List<BarData>, StrategyConfig, BacktestEngine.BacktestResult> run)
 {
-    Console.WriteLine($"\n=== {title} 可用性(OOS train250/test90/stride60 跨檔;Full=全期連續、無調參)===");
+    Console.WriteLine($"\n=== {title} 可用性(OOS train250/test90/stride{gWfStride}/embargo{gEmbargo} 跨檔;Full=全期連續、無調參)===");
     Console.WriteLine($"  {"strategy",-16}{"OOSsym+%",9}{"OOSmed%",9}{"+fold%",8}│{"fullRet%",10}{"fullSh",8}{"fullDD%",9}{"DD<BH%",8}  判定");
     var eqAll = new Dictionary<string, Dictionary<string, List<decimal>>>();
     var lines = new ConcurrentDictionary<string, string>();
@@ -845,12 +854,12 @@ Dictionary<string, Dictionary<string, List<decimal>>> PrintTable(
     return eqAll;
 }
 
-var loEq = PrintTable("Long-only(Benson 引擎)", (s, b, c) => BacktestEngine.RunWalkForward(s, b, c, 250, 90, 60), (s, b, c) => BacktestEngine.Run(s, b, c));
+var loEq = PrintTable("Long-only(Benson 引擎)", (s, b, c) => BacktestEngine.RunWalkForward(s, b, c, 250, 90, gWfStride, embargoBars: gEmbargo), (s, b, c) => BacktestEngine.Run(s, b, c));
 var lsEq = PrintTable("Long-short(新引擎)",
-    (s, b, c) => LongShortBacktestEngine.RunWalkForward(s, b, c, 250, 90, 60,
+    (s, b, c) => LongShortBacktestEngine.RunWalkForward(s, b, c, 250, 90, gWfStride,
         defaultInitialSlPct: withProtection ? protSl : slPct,
         peakTrailTriggerPct: withProtection ? protTrailTrig : 0m, peakTrailDistancePct: withProtection ? protTrailDist : 0m,
-        beTriggerPct: withProtection ? protBeTrig : 0m, beBufferPct: withProtection ? protBeBuf : 0m),
+        beTriggerPct: withProtection ? protBeTrig : 0m, beBufferPct: withProtection ? protBeBuf : 0m, embargoBars: gEmbargo),
     (s, b, c) => LongShortBacktestEngine.Run(s, b, c,
         defaultInitialSlPct: withProtection ? protSl : slPct,
         peakTrailTriggerPct: withProtection ? protTrailTrig : 0m, peakTrailDistancePct: withProtection ? protTrailDist : 0m,
@@ -998,7 +1007,7 @@ List<decimal> PoolOosFolds(IStrategy s)
 {
     var r = new List<decimal>();
     foreach (var kv in data)
-        try { var w = LongShortBacktestEngine.RunWalkForward(s, kv.Value, new StrategyConfig { Symbol = kv.Key, Interval = "1d" }, 250, 90, 60, commission: gComm, slippagePct: gSlip, confidenceSizing: confSizing, applyFunding: realFunding);
+        try { var w = LongShortBacktestEngine.RunWalkForward(s, kv.Value, new StrategyConfig { Symbol = kv.Key, Interval = "1d" }, 250, 90, gWfStride, commission: gComm, slippagePct: gSlip, confidenceSizing: confSizing, applyFunding: realFunding, embargoBars: gEmbargo);
               foreach (var f in w.Folds.Where(f => f.Test != null)) r.Add(f.Test!.TotalReturnPct); }
         catch { }
     return r;
@@ -1061,7 +1070,7 @@ List<double> PerPeriodSeries(IStrategy s)
     foreach (var kv in data)
         try
         {
-            var w = LongShortBacktestEngine.RunWalkForward(s, kv.Value, new StrategyConfig { Symbol = kv.Key, Interval = "1d" }, 250, 90, 60, commission: gComm, slippagePct: gSlip, confidenceSizing: confSizing, applyFunding: realFunding);
+            var w = LongShortBacktestEngine.RunWalkForward(s, kv.Value, new StrategyConfig { Symbol = kv.Key, Interval = "1d" }, 250, 90, gWfStride, commission: gComm, slippagePct: gSlip, confidenceSizing: confSizing, applyFunding: realFunding, embargoBars: gEmbargo);
             var fs = w.Folds.Where(f => f.Test != null).Select(f => (double)f.Test!.TotalReturnPct).ToList();
             if (fs.Count > 0) perCoin.Add(fs);
         }
