@@ -1215,6 +1215,57 @@ if (trials.Count >= 3)
         $"本資料 ≈ {sampleYears:F1} 年 {(sampleYears >= minBtlYears ? "✅ 足夠" : "⚠️ 不足 → 獨立變體太多/樣本太短、多重檢定假象風險高")}。");
     Console.WriteLine($"     純噪音在 {sampleYears:F1} 年 × {nEff:F0} 個獨立配置的期望最高『年化』Sharpe ≈ {expMaxAnnualSh:F2}" +
         $" —— 最佳策略的年化 Sharpe 要明顯高於這個才算真 edge(諧波/TA 尤其要嚴,文獻視其易過擬合)。");
+
+    // ── #4 Probability of Backtest Overfitting(CSCV、Bailey-Borwein-López de Prado-Zhu 2014)──
+    // 用 trialSeries(T 期 × N 策略 的 OOS 報酬矩陣)跑 CSCV:時間切 numBlk 連續塊(保序)、枚舉
+    // C(numBlk, numBlk/2) 種 IS/OOS 拆分;每次取 IS 最佳策略、看它 OOS 排名落在哪。
+    // PBO = 「IS 最佳在 OOS 低於中位數」的比率 = 選擇程序過擬合的機率。PBO>0.5=比隨機還爛、理想 <~0.1。
+    int tCommon = trialSeries.Count > 0 ? trialSeries.Min(s2 => s2.Count) : 0;
+    if (tCommon >= 4 && N >= 3)
+    {
+        int numBlk = Math.Min(16, tCommon); if (numBlk % 2 == 1) numBlk--;
+        var blocks = new List<int>[numBlk];
+        for (int i = 0; i < numBlk; i++) blocks[i] = new List<int>();
+        for (int t = 0; t < tCommon; t++) blocks[t * numBlk / tCommon].Add(t);   // 連續塊(保時間結構)
+        double ShOn(int strat, List<int> periods)
+        {
+            int c = periods.Count; if (c < 2) return 0;
+            double mu = 0; foreach (var t in periods) mu += trialSeries[strat][t]; mu /= c;
+            double v = 0; foreach (var t in periods) { double d = trialSeries[strat][t] - mu; v += d * d; }
+            double sd = Math.Sqrt(Math.Max(v / (c - 1), 0));
+            return sd > 1e-12 ? mu / sd : 0;
+        }
+        var combos = new List<int[]>();
+        void GenCombos(int start, List<int> cur)
+        {
+            if (cur.Count == numBlk / 2) { combos.Add(cur.ToArray()); return; }
+            for (int i = start; i < numBlk; i++) { cur.Add(i); GenCombos(i + 1, cur); cur.RemoveAt(cur.Count - 1); }
+        }
+        GenCombos(0, new List<int>());
+        int overfit = 0, oosPos = 0; var logits = new List<double>(combos.Count);
+        foreach (var isBlk in combos)
+        {
+            var inIs = new bool[numBlk]; foreach (var c in isBlk) inIs[c] = true;
+            var isP = new List<int>(); var oosP = new List<int>();
+            for (int i = 0; i < numBlk; i++) (inIs[i] ? isP : oosP).AddRange(blocks[i]);
+            int best = 0; double bestSh = double.MinValue;
+            for (int n = 0; n < N; n++) { double sh = ShOn(n, isP); if (sh > bestSh) { bestSh = sh; best = n; } }
+            double bestOos = ShOn(best, oosP);
+            int rank = 0; for (int n = 0; n < N; n++) if (ShOn(n, oosP) <= bestOos) rank++;   // 1=最差..N=最好
+            double omega = Math.Min(1 - 1e-6, Math.Max(1e-6, rank / (double)(N + 1)));
+            double lambda = Math.Log(omega / (1 - omega));
+            logits.Add(lambda);
+            if (lambda <= 0) overfit++;       // OOS 排名 ≤ 中位 = 過擬合
+            if (bestOos > 0) oosPos++;
+        }
+        double pbo = (double)overfit / combos.Count;
+        logits.Sort();
+        double medLogit = logits[logits.Count / 2];
+        Console.WriteLine($"  → PBO(CSCV、{combos.Count} 組 {numBlk} 塊拆分、矩陣 T={tCommon}期×N={N}):過擬合機率 = {pbo:P0} " +
+            $"{(pbo > 0.5 ? "⚠️ >50% 比隨機還爛=嚴重過擬合" : pbo > 0.2 ? "⚠️ 偏高(選擇偏誤明顯)" : "✅ 低")};" +
+            $" IS 最佳在 OOS 為正報酬比率 {(double)oosPos / combos.Count:P0}、中位 logit {medLogit:F2}(>0 才好)。");
+    }
+    else Console.WriteLine($"  → PBO(CSCV):略過(需 T≥4 期且 N≥3,現 T={tCommon}、N={N};--fast/切窗時期數可能太少)。");
 }
 
 // 2026-05-27 Q1.1:Kelly fraction sizing 推薦(每支顯著策略、用 walk-forward win-rate / avg win / avg loss)
