@@ -1171,13 +1171,19 @@ if (trials.Count >= 3)
         return (suu > 0 && svv > 0) ? suv / Math.Sqrt(suu * svv) : 0;
     }
     double sumSqCorr = N; double absRhoSum = 0; int pairCnt = 0;   // 對角線 ρ_ii²=1 共 N 個
+    // 交叉驗證(López de Prado & Lewis 2019, Quantitative Finance):|ρ|≥0.5 的變體視為近重複而合併,
+    // 連通分量(union-find)數 = 有效獨立「群」數,跟 participation ratio 並列當第二把尺。
+    int ncN = trialSeries.Count; var uf = new int[ncN]; for (int i = 0; i < ncN; i++) uf[i] = i;
+    int Find(int x) { while (uf[x] != x) { uf[x] = uf[uf[x]]; x = uf[x]; } return x; }
     for (int ia = 0; ia < trialSeries.Count; ia++)
         for (int ib = ia + 1; ib < trialSeries.Count; ib++)
         {
             double rho = PairCorr(trialSeries[ia], trialSeries[ib]);
             sumSqCorr += 2 * rho * rho; absRhoSum += Math.Abs(rho); pairCnt++;
+            if (Math.Abs(rho) >= 0.5) { int ra = Find(ia), rb = Find(ib); if (ra != rb) uf[ra] = rb; }
         }
     double nEff = Math.Min(N, Math.Max(1.0, (double)N * N / sumSqCorr));
+    int nClusters = Enumerable.Range(0, ncN).Select(Find).Distinct().Count();
     double avgAbsRho = pairCnt > 0 ? absRhoSum / pairCnt : 0;
     double sr0 = srStd * ((1 - euler) * NormInv(1.0 - 1.0 / nEff) + euler * NormInv(1.0 - 1.0 / (nEff * Math.E)));
     var withP = trials.Select(x => (x.name, x.sr, x.n, x.skew, x.kurt, p: 1.0 - NormCdf(x.tstat))).ToList();
@@ -1186,7 +1192,7 @@ if (trials.Count >= 3)
     double bhThresh = 0;
     for (int k = 0; k < pAsc.Count; k++) if (pAsc[k].p <= (k + 1.0) / N * 0.05) bhThresh = pAsc[k].p;
     double bonf = 0.05 / N;
-    Console.WriteLine($"\n=== 多重檢定 + Deflated Sharpe(N={N} 變體 → N_eff={nEff:F0} 有效獨立[平均|ρ|={avgAbsRho:F2}]、SR*={sr0:F3}=試 N_eff 次期望最大 Sharpe 基準)===");
+    Console.WriteLine($"\n=== 多重檢定 + Deflated Sharpe(N={N} 變體 → N_eff={nEff:F0} 有效獨立[participation ratio;平均|ρ|={avgAbsRho:F2};聚類法 |ρ|≥0.5 ≈ {nClusters} 群]、SR*={sr0:F3}=試 N_eff 次期望最大 Sharpe)===");
     Console.WriteLine($"  {"strategy",-22}{"SR",7}{"DSR",8}{"p(1側)",10}{"Bonf",6}{"BH",5}");
     int dsrPass = 0, bonfPass = 0, bhPass = 0;
     var bySr = withP.OrderByDescending(x => x.sr).ToList();
