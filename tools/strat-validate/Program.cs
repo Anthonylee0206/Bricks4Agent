@@ -1208,6 +1208,17 @@ if (trials.Count >= 3)
     }
     Console.WriteLine($"  → 原始 95%CI 顯著 {sigPassed} 支;多重檢定後:DSR≥0.95 {dsrPass} 支、Bonferroni {bonfPass} 支、BH-FDR(5%) {bhPass} 支。");
     Console.WriteLine($"     差額 = 多重檢定揪出的假陽性;只信過 DSR / BH-FDR 的才是真 edge。");
+    // ── Haircut Sharpe(Harvey & Liu 2015, JPM "Backtesting")── 多重檢定後把 Sharpe 打折的可解釋指標。
+    // 用有效獨立數 N_eff 做 Bonferroni 調整:p_adj=min(1, p·N_eff)、haircut 後 SR = SR·(t_adj/t_orig)。非線性:高 SR 輕罰、邊緣重罰。
+    if (bySr.Count > 0)
+    {
+        var top = bySr[0];
+        double tOrig = NormInv(Math.Min(1 - 1e-9, Math.Max(1e-9, 1 - top.p)));
+        double pAdj = Math.Min(1, top.p * nEff);
+        double tAdj = NormInv(Math.Min(1 - 1e-9, Math.Max(1e-9, 1 - pAdj)));
+        double mult = tOrig > 0 ? Math.Max(0, tAdj / tOrig) : 0;
+        Console.WriteLine($"  → Haircut Sharpe(Harvey-Liu 2015、Bonferroni×N_eff={nEff:F0}):最佳 {top.name} SR {top.sr:F3} → 打折後 ≈ {top.sr * mult:F3}(削 {(1 - mult) * 100:F0}%);非線性、高 SR 輕罰邊緣重罰。");
+    }
 
     // ── Minimum Backtest Length(Bailey, Borwein, López de Prado & Zhu 2014)──
     // 試 N 個配置時,需要的最小回測「年數」;樣本短於它 → 純噪音幾乎保證冒出年化 Sharpe 1 的假象。
