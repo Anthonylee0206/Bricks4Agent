@@ -1220,6 +1220,43 @@ if (trials.Count >= 3)
         Console.WriteLine($"  → Haircut Sharpe(Harvey-Liu 2015、Bonferroni×N_eff={nEff:F0}):最佳 {top.name} SR {top.sr:F3} → 打折後 ≈ {top.sr * mult:F3}(削 {(1 - mult) * 100:F0}%);非線性、高 SR 輕罰邊緣重罰。");
     }
 
+    // ── 資料窺探檢定:White's Reality Check(2000, Econometrica)──
+    // 問題:跑這麼多變體,「最佳那支」是不是只是 data-snooping 撿到運氣?把整組策略一起檢定:
+    //   對齊各策略到共同最短期數 → 共享索引的區塊重抽(保留跨策略相關)→ 最大「平均報酬」統計量的 bootstrap 分佈;
+    //   每支 H0 均值=0(減自身均值去中心)。p<0.05 = 整組最佳策略真的超越基準、非撿運氣。
+    //   採非學生化 RC(小樣本穩健);Hansen SPA(學生化)在本資料 OOS 折數(~8–11)下小樣本不穩(學生化統計量易爆),
+    //   需更長資料才可靠,故暫不納入 —— 寧缺勿掛假訊號。
+    {
+        var rcSer = trialSeries.Where(z => z.Count >= 5).ToList();
+        if (rcSer.Count >= 2)
+        {
+            int L = rcSer.Min(z => z.Count), K = rcSer.Count;
+            var al = rcSer.Select(z => z.Skip(z.Count - L).ToList()).ToList();   // 對齊到最近 L 期
+            double[] mu = new double[K];
+            for (int k = 0; k < K; k++) mu[k] = al[k].Average();
+            double rootL = Math.Sqrt(L);
+            double obsRC = double.MinValue;
+            for (int k = 0; k < K; k++) obsRC = Math.Max(obsRC, rootL * mu[k]);
+            int B = 2000, block = Math.Max(1, (int)Math.Round(rootL));
+            var rcRng = new Random(20260615);
+            int geRC = 0; int[] idx = new int[L];
+            for (int b = 0; b < B; b++)
+            {
+                for (int t = 0; t < L;) { int st = rcRng.Next(L); for (int j = 0; j < block && t < L; j++, t++) idx[t] = (st + j) % L; }
+                double bRC = double.MinValue;
+                for (int k = 0; k < K; k++)
+                {
+                    double bm = 0; for (int t = 0; t < L; t++) bm += al[k][idx[t]]; bm /= L;
+                    bRC = Math.Max(bRC, rootL * (bm - mu[k]));                       // 減自身均值去中心(H0:均值=0)
+                }
+                if (bRC >= obsRC) geRC++;
+            }
+            double pRC = (geRC + 1.0) / (B + 1.0);
+            string warn = L < 12 ? $" ⚠️ 僅 {L} 期 OOS、樣本偏少,p 僅供參考(--fast 折數少;以 --full/更長資料為準)" : "";
+            Console.WriteLine($"  → 資料窺探檢定(White Reality Check、共享區塊重抽 B={B}、對齊 {L} 期、block≈{block}):p={pRC:F3}(<0.05=整組最佳策略真超越基準、非撿運氣)。{warn}");
+        }
+    }
+
     // ── Minimum Backtest Length(Bailey, Borwein, López de Prado & Zhu 2014)──
     // 試 N 個配置時,需要的最小回測「年數」;樣本短於它 → 純噪音幾乎保證冒出年化 Sharpe 1 的假象。
     //   MinBTL ≈ 2·ln(N_eff) / SR*_annual²(SR*_annual=想排除的噪音年化 Sharpe、取 1.0;N 用有效獨立數 #2b)
