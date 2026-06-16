@@ -70,6 +70,8 @@ public class QuoteOhlcvHandler : ICapabilityHandler
             "fetch_funding_deep" => await FetchFundingDeep(opts, ct),
             "get_oi_now"        => await GetOpenInterestNow(opts, ct),
             "get_bars_funding"  => GetBarsFunding(opts),
+            "get_dvol"          => GetDvol(opts),
+            "fetch_dvol_deep"   => await FetchDvolDeep(opts, ct),
             _ => (false, null, $"Unknown route: {route}")
         };
     }
@@ -119,9 +121,11 @@ public class QuoteOhlcvHandler : ICapabilityHandler
         var fundings = _db.GetFundingRates(sym, 2000);
         var retailLs = _db.GetRetailLsRatios(sym, 5000);   // Q2 retail_ls_contrarian alpha
         var oiHist = _db.GetOpenInterestHist(sym, 5000);   // Q2 oi_contrarian alpha
+        var dvol = _db.GetDvolValues(sym, 5000);           // VRP/波動 carry(BTC/ETH 才有、其餘空→null)
         var merged = AlignFunding(bars, fundings);
         var lsMerged = AlignRetailLs(bars, retailLs);
         var oiMerged = AlignOi(bars, oiHist);
+        var dvolMerged = AlignDvol(bars, dvol);
 
         var json = JsonSerializer.Serialize(new
         {
@@ -131,6 +135,7 @@ public class QuoteOhlcvHandler : ICapabilityHandler
             funding_points = fundings.Count,
             retail_ls_points = retailLs.Count,
             oi_points = oiHist.Count,
+            dvol_points = dvol.Count,
             bars = merged.Select((m, idx) => new
             {
                 open_time  = m.Bar.OpenTime,
@@ -143,6 +148,7 @@ public class QuoteOhlcvHandler : ICapabilityHandler
                 funding_rate = m.FundingRate,
                 retail_long_short_ratio = idx < lsMerged.Count ? lsMerged[idx].LsRatio : null,
                 open_interest = idx < oiMerged.Count ? oiMerged[idx].OiValue : null,
+                dvol = idx < dvolMerged.Count ? dvolMerged[idx].DvolValue : null,
             })
         });
         return (true, json, null);
@@ -207,6 +213,28 @@ public class QuoteOhlcvHandler : ICapabilityHandler
             {
                 last = sortedOi[oiIdx].OiValue;
                 oiIdx++;
+            }
+            outl.Add((b, last));
+        }
+        return outl;
+    }
+
+    /// <summary>同 AlignFunding pattern,把 Deribit DVOL 隱含波動序列 as-of join 到 bars(向前填充)。
+    /// 早於第一筆的 bar → null。VRP / 波動 carry 用(隱含波動,對照 OHLCV 算的實現波動)。純函式、可測。</summary>
+    public static List<(OhlcvBar Bar, decimal? DvolValue)> AlignDvol(
+        List<OhlcvBar> bars, List<DvolPoint> dvol)
+    {
+        var sortedBars = bars.OrderBy(b => b.OpenTime).ToList();
+        var sortedDvol = dvol.OrderBy(p => p.SampleTime).ToList();
+        var outl = new List<(OhlcvBar, decimal?)>(sortedBars.Count);
+        int di = 0;
+        decimal? last = null;
+        foreach (var b in sortedBars)
+        {
+            while (di < sortedDvol.Count && sortedDvol[di].SampleTime <= b.OpenTime)
+            {
+                last = sortedDvol[di].DvolValue;
+                di++;
             }
             outl.Add((b, last));
         }
@@ -323,6 +351,40 @@ public class QuoteOhlcvHandler : ICapabilityHandler
             symbol, binance_symbol = binanceSymbol,
             open_interest = oi.Value.OpenInterest, time = oi.Value.Time
         });
+        return (true, json, null);
+    }
+
+    // ── Deribit DVOL 隱含波動指數(VRP / 波動 carry)──────────────────
+
+    /// <summary>get_dvol — 查 DB 的 Deribit DVOL 隱含波動序列(參數:symbol/currency BTC|ETH, limit 預設 1000)。</summary>
+    private (bool, string?, string?) GetDvol(JsonElement opts)
+    {
+        var symbol = opts.TryGetProperty("symbol", out var s) ? s.GetString() ?? "" : "";
+        var limit  = opts.TryGetProperty("limit",  out var l) ? l.GetInt32() : 1000;
+        if (string.IsNullOrEmpty(symbol))
+            return (false, null, "Missing required parameter: symbol");
+
+        var points = _db.GetDvolValues(NormalizeCryptoSymbol(symbol).ToUpperInvariant(), limit);
+        var json = JsonSerializer.Serialize(new
+        {
+            symbol,
+            count = points.Count,
+            dvol = points.Select(p => new { sample_time = p.SampleTime, dvol = p.DvolValue })
+        });
+        return (true, json, null);
+    }
+
+    /// <summary>fetch_dvol_deep — 深度回補 Deribit DVOL(參數:symbol/currency BTC|ETH, target_days 預設 1500)。</summary>
+    private async Task<(bool, string?, string?)> FetchDvolDeep(JsonElement opts, CancellationToken ct)
+    {
+        var symbol     = opts.TryGetProperty("symbol",      out var s) ? s.GetString() ?? "" : "";
+        var targetDays = opts.TryGetProperty("target_days", out var t) ? t.GetInt32() : 1500;
+        if (string.IsNullOrEmpty(symbol))
+            return (false, null, "Missing required parameter: symbol");
+
+        var cur = NormalizeCryptoSymbol(symbol).ToUpperInvariant();   // "BTC" / "ETH"
+        var count = await _fetcher.FetchDvolDeepAsync(cur, targetDays, ct);
+        var json = JsonSerializer.Serialize(new { symbol, currency = cur, target_days = targetDays, points_saved = count });
         return (true, json, null);
     }
 

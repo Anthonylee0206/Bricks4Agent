@@ -92,6 +92,19 @@ public class QuoteDbStorage : IDisposable
 
             CREATE INDEX IF NOT EXISTS idx_oi_hist_lookup
                 ON open_interest_hist(symbol, sample_time);
+
+            -- 2026-06-16 VRP / 波動 carry shadow:Deribit DVOL 隱含波動指數(BTC/ETH、年化 vol points)
+            -- 跟 retail_ls / open_interest 平行,QuoteOhlcvHandler AlignDvol 對齊後 emit dvol。
+            -- 隱含波動來源(對照 BTC OHLCV 算的實現波動 → 變異數風險溢酬)。見 docs/designs/vrp-shadow-deploy-sketch.md。
+            CREATE TABLE IF NOT EXISTS deribit_dvol (
+                symbol      TEXT NOT NULL,    -- Deribit currency:'BTC' / 'ETH'
+                sample_time TEXT NOT NULL,
+                dvol_value  REAL NOT NULL,    -- 隱含波動指數(年化 %,例 55.0)
+                PRIMARY KEY (symbol, sample_time)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_deribit_dvol_lookup
+                ON deribit_dvol(symbol, sample_time);
             """;
         cmd.ExecuteNonQuery();
     }
@@ -471,6 +484,70 @@ public class QuoteDbStorage : IDisposable
     {
         using var cmd = _conn.CreateCommand();
         cmd.CommandText = "SELECT COUNT(*) FROM open_interest_hist WHERE symbol = $symbol";
+        cmd.Parameters.AddWithValue("$symbol", symbol);
+        return Convert.ToInt32(cmd.ExecuteScalar() ?? 0);
+    }
+
+    // ── Deribit DVOL 隱含波動指數(VRP / 波動 carry)──────────────────
+
+    public void SaveDvolValues(IEnumerable<DvolPoint> points)
+    {
+        using var tx = _conn.BeginTransaction();
+        using var cmd = _conn.CreateCommand();
+        cmd.Transaction = tx;
+        cmd.CommandText = """
+            INSERT OR REPLACE INTO deribit_dvol (symbol, sample_time, dvol_value)
+            VALUES ($symbol, $sampleTime, $dvolValue)
+            """;
+        var pSymbol = cmd.Parameters.Add("$symbol", SqliteType.Text);
+        var pTime = cmd.Parameters.Add("$sampleTime", SqliteType.Text);
+        var pVal = cmd.Parameters.Add("$dvolValue", SqliteType.Real);
+
+        int count = 0;
+        foreach (var p in points)
+        {
+            pSymbol.Value = p.Symbol;
+            pTime.Value = p.SampleTime.ToString("o");
+            pVal.Value = (double)p.DvolValue;
+            cmd.ExecuteNonQuery();
+            count++;
+        }
+        tx.Commit();
+        _logger.LogDebug("Saved {Count} DVOL points", count);
+    }
+
+    public List<DvolPoint> GetDvolValues(string symbol, int limit = 1000)
+    {
+        using var cmd = _conn.CreateCommand();
+        cmd.CommandText = """
+            SELECT symbol, sample_time, dvol_value
+            FROM deribit_dvol
+            WHERE symbol = $symbol
+            ORDER BY sample_time DESC
+            LIMIT $limit
+            """;
+        cmd.Parameters.AddWithValue("$symbol", symbol);
+        cmd.Parameters.AddWithValue("$limit", limit);
+
+        var list = new List<DvolPoint>();
+        using var reader = cmd.ExecuteReader();
+        while (reader.Read())
+        {
+            list.Add(new DvolPoint
+            {
+                Symbol = reader.GetString(0),
+                SampleTime = DateTime.Parse(reader.GetString(1)),
+                DvolValue = (decimal)reader.GetDouble(2),
+            });
+        }
+        list.Reverse();   // 回傳由舊到新
+        return list;
+    }
+
+    public int CountDvolValues(string symbol)
+    {
+        using var cmd = _conn.CreateCommand();
+        cmd.CommandText = "SELECT COUNT(*) FROM deribit_dvol WHERE symbol = $symbol";
         cmd.Parameters.AddWithValue("$symbol", symbol);
         return Convert.ToInt32(cmd.ExecuteScalar() ?? 0);
     }

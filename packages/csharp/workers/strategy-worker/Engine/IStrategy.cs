@@ -84,4 +84,5 @@ public class BarData
     public decimal? BtcRet { get; set; }   // 當日 BTC 報酬(strat-validate 注入;BTC-lead alt-lag 策略用、跨幣領先訊號)
     public decimal? TakerLsRatio { get; set; }   // taker 主動買/賣量比(order-flow;>1=主動買壓主導;data.binance.vision metrics)
     public decimal? CotSpecNet { get; set; }   // COT 投機者(non-commercial)淨持倉 % OI(結構性部位;極端=擁擠;strat-validate 從 CFTC 注入)
+    public decimal? DvolValue { get; set; }   // Deribit DVOL 隱含波動指數(年化 %;VRP/波動 carry 用;隱含>實現=賣方溢酬;quote-worker AlignDvol 注入)
 }

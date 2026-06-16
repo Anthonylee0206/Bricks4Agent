@@ -33,6 +33,11 @@ public class StartupHistoryFetcher
     // 資金費率回補目標筆數（8h 一次 → 1000 筆 ≈ 333 天)。
     private const int FundingTarget = 1000;
 
+    // Deribit DVOL 隱含波動回補目標天數(~4 年、涵蓋 2022 熊市;BTC DVOL 2021-03 上線)。
+    // strategy 側 VRP 只用 BTC,ETH 一併抓(便宜、留作日後 cross-section、達標即 skip)。
+    private const int DvolTarget = 1500;
+    private static readonly string[] DvolCurrencies = { "BTC", "ETH" };
+
     public bool IsFetching { get; private set; }
     public string LastStatus { get; private set; } = "idle";
 
@@ -190,6 +195,30 @@ public class StartupHistoryFetcher
             {
                 errors.Add($"{binanceSymbol}/oi_hist: {ex.Message}");
                 _logger.LogWarning(ex, "OI hist fetch failed: {Symbol}", binanceSymbol);
+            }
+        }
+
+        // VRP / 波動 carry:Deribit DVOL 隱含波動指數深度回補(BTC/ETH、日線、免金鑰)。達標即 skip。
+        foreach (var cur in DvolCurrencies)
+        {
+            if (ct.IsCancellationRequested) break;
+            try
+            {
+                var have = _db.CountDvolValues(cur);
+                if (have >= DvolTarget)
+                {
+                    _logger.LogInformation("DVOL deep skip {Cur}: already {Have} ≥ {Target}", cur, have, DvolTarget);
+                    continue;
+                }
+                var count = await _fetcher.FetchDvolDeepAsync(cur, DvolTarget, ct);
+                _logger.LogInformation("DVOL deep: {Cur} → {Count} daily points (had {Have}, target {Target})",
+                    cur, count, have, DvolTarget);
+                await Task.Delay(300, ct).ContinueWith(_ => { });
+            }
+            catch (Exception ex)
+            {
+                errors.Add($"{cur}/dvol: {ex.Message}");
+                _logger.LogWarning(ex, "DVOL deep fetch failed: {Cur}", cur);
             }
         }
 

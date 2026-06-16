@@ -403,6 +403,76 @@ public class HistoricalDataFetcher
         }
     }
 
+    // ── Deribit DVOL 隱含波動指數(VRP / 波動 carry)──────────────────
+
+    /// <summary>
+    /// Deribit DVOL(BTC/ETH 隱含波動指數,類 VIX)深度回補。
+    /// public/get_volatility_index_data:resolution=1D、回 result.data = [[ts_ms,open,high,low,close],…] 日 OHLC(純數字),
+    /// 取 close 當當日隱含波動值(年化 %)。免金鑰。固定 700 日窗往回分頁(Deribit 單次上限 ~744 點),
+    /// 抓到 targetDays 或資料起點(空窗 = 早於 DVOL 上線、停)。SaveDvolValues 走 (symbol, sample_time) PK upsert、重疊不重複。
+    /// </summary>
+    public async Task<int> FetchDvolDeepAsync(
+        string currency, int targetDays, CancellationToken ct = default)
+    {
+        var cur = currency.ToUpperInvariant();   // "BTC" / "ETH"
+        const long dayMs = 86_400_000L;
+        const int chunkDays = 700;
+        var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        long floorMs = nowMs - (long)targetDays * dayMs;
+        long windowEnd = nowMs;
+        int totalSaved = 0;
+        int maxPages = targetDays / chunkDays + 3;
+
+        for (int page = 0; page < maxPages && windowEnd > floorMs; page++)
+        {
+            if (ct.IsCancellationRequested) break;
+            long windowStart = Math.Max(floorMs, windowEnd - (long)chunkDays * dayMs);
+
+            var url = $"https://www.deribit.com/api/v2/public/get_volatility_index_data" +
+                      $"?currency={cur}&start_timestamp={windowStart}&end_timestamp={windowEnd}&resolution=1D";
+            using var resp = await _http.GetAsync(url, ct);
+            if (!resp.IsSuccessStatusCode)
+            {
+                _logger.LogWarning("Deribit DVOL returned {Code} for {Cur} page {Page}", resp.StatusCode, cur, page);
+                break;
+            }
+
+            var json = await resp.Content.ReadAsStringAsync(ct);
+            using var doc = JsonDocument.Parse(json);
+            if (!doc.RootElement.TryGetProperty("result", out var result) ||
+                !result.TryGetProperty("data", out var data) ||
+                data.ValueKind != JsonValueKind.Array)
+                break;
+
+            int len = data.GetArrayLength();
+            if (len == 0) break;   // 此窗無資料 = 已早於 DVOL 上線、更早只會更空
+
+            var points = new List<DvolPoint>(len);
+            foreach (var row in data.EnumerateArray())
+            {
+                // row = [timestamp_ms, open, high, low, close]
+                if (row.ValueKind != JsonValueKind.Array || row.GetArrayLength() < 5) continue;
+                var close = GetDecimal(row[4]);
+                if (close <= 0) continue;
+                points.Add(new DvolPoint
+                {
+                    Symbol     = cur,
+                    SampleTime = DateTimeOffset.FromUnixTimeMilliseconds(row[0].GetInt64()).UtcDateTime,
+                    DvolValue  = close,
+                });
+            }
+            if (points.Count > 0) _db.SaveDvolValues(points);
+            totalSaved += points.Count;
+
+            windowEnd = windowStart - 1;   // 下一窗往回
+            await Task.Delay(250, ct).ContinueWith(_ => { });
+        }
+
+        _logger.LogInformation("Deribit DVOL deep {Cur}: saved {Count} daily points (target {Target}d)",
+            cur, totalSaved, targetDays);
+        return totalSaved;
+    }
+
     /// <summary>
     /// 當前未平倉量快照（OI history 只有 ~30 天、故只取即時值當 live 訊號、不落歷史表）。
     /// 回 (openInterest 基幣張數, 取得時間)。失敗回 null。
