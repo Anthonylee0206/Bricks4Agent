@@ -20,7 +20,7 @@ namespace Broker.Services;
 /// 啟動時 load 所有 entry 重建記憶體 dict；任何變更（add/remove/pause/resume/qty 調整）
 /// 同步寫回 DB——這樣 broker 重啟後監控清單不會消失。
 /// </summary>
-public class AutoTraderService : BackgroundService
+public partial class AutoTraderService : BackgroundService
 {
     private readonly IExecutionDispatcher _dispatcher;
     private readonly IWorkerRegistry _registry;
@@ -1226,6 +1226,11 @@ public class AutoTraderService : BackgroundService
             // 預設所有 scanner 都 shadow=true、4 週紙交易達標才升 live。
             try { await SweepScannerLegsAsync(ct); }
             catch (Exception ex) { _logger.LogWarning(ex, "AutoTrader scanner sweep failed"); }
+
+            // Step 1d: VRP / 波動 carry shadow(2026-06-16)——獨立變異數 carry 腿(PnL 跟價格無關)、
+            // 只讀行情 + 寫 vrp_shadow_legs(shadow)、不下任何單。實作見 AutoTraderService.VrpShadow.cs。
+            try { await SweepVrpShadowAsync(ct); }
+            catch (Exception ex) { _logger.LogWarning(ex, "AutoTrader VRP shadow sweep failed"); }
         }
     }
 
