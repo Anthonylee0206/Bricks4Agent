@@ -73,6 +73,9 @@ using (var initDb = BrokerDb.UseSqlite(connectionString))
     // 核心腿是固定 (策略, 幣);scanner 是「策略 + 候選幣池」、AutoTrader 每 cycle 挑訊號最強的開
     initDb.EnsureTable<ScannerLegEntry>();
     initDb.EnsureTable<ScannerActiveLegEntry>();
+    // VRP / 波動 carry shadow 腿(2026-06-16)— 獨立於方向性 scanner 腿(變異數 carry、PnL 跟價格無關)
+    // 見 docs/designs/vrp-shadow-deploy-sketch.md §2;新表、EnsureTable=CREATE IF NOT EXISTS 即可
+    initDb.EnsureTable<VrpShadowLegEntry>();
     // 對既有 DB 補欄位（mode / leverage 是 Phase 3 加的、舊表沒有）
     Broker.Services.AutoTraderDbMigrations.Apply(initDb, startupLoggerFactory.CreateLogger("AutoTraderDbMigrations"));
     // Alert system（#2 2026-05-07）—— 規則 + 事件
