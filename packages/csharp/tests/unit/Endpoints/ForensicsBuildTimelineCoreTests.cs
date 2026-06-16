@@ -9,7 +9,7 @@ namespace Broker.Tests.Endpoints;
 /// <summary>
 /// ForensicsEndpoints.BuildTimelineCore 端對端整合測試。
 ///
-/// 這是 forensics agent 的心臟——合併 audit_events + approval_requests +
+/// 這是 forensics agent 的心臟——合併 audit_events + trading_approval_requests +
 /// llm_reasoning_audit 三表、按 ts 排序、依 admin/self scope 過濾。
 ///
 /// 之前只測 BuildLlmPrompts（純函式），這條補上資料聚合層。
@@ -127,7 +127,7 @@ public class ForensicsBuildTimelineCoreTests : IDisposable
     public void BuildTimelineCore_ApprovalRequested_AppearsWith3SubEventsIfFull()
     {
         // approval_requested 一筆寫入會在 timeline 產生 1-3 個事件（requested / decided / dispatched）
-        _db.Insert(new ApprovalRequest
+        _db.Insert(new TradingApprovalRequest
         {
             ApprovalId = "apr-001", TraceId = "trace-apr", CapabilityId = "trading.order",
             Route = "place_order", Payload = "{}",

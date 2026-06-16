@@ -4,7 +4,7 @@ using BrokerCore.Models;
 namespace BrokerCore.Services;
 
 /// <summary>
-/// 核准服務——管理 approval_requests 表 + 提供「這個 capability 需要 approve 嗎」的 policy。
+/// 核准服務——管理 trading_approval_requests 表 + 提供「這個 capability 需要 approve 嗎」的 policy。
 ///
 /// PoolDispatcher 派發前呼叫 GetOrCreatePending() 看狀態：
 ///   - null → 不需要 approve、放行
@@ -12,7 +12,7 @@ namespace BrokerCore.Services;
 ///   - status='approved' → 放行
 ///   - status='rejected' → Fail caller
 /// </summary>
-public interface IApprovalService
+public interface ITradingApprovalService
 {
     /// <summary>
     /// 查 (capability, route) 組合是否需要 approve。
@@ -25,15 +25,15 @@ public interface IApprovalService
     /// 對給定 trace_id 取得 / 建立 approval。
     /// 第一次呼叫產 'pending'；之後同 trace_id 直接回上次的 record。
     /// </summary>
-    ApprovalRequest GetOrCreatePending(
+    TradingApprovalRequest GetOrCreatePending(
         string traceId, string capabilityId, string route, string payload,
         string principalId, string role);
 
     /// <summary>列 approval（依 status 過濾、新到舊）</summary>
-    List<ApprovalRequest> List(string? status = null, int limit = 50);
+    List<TradingApprovalRequest> List(string? status = null, int limit = 50);
 
     /// <summary>查單一 approval</summary>
-    ApprovalRequest? Get(string approvalId);
+    TradingApprovalRequest? Get(string approvalId);
 
     /// <summary>標 approved</summary>
     bool Approve(string approvalId, string decidedBy, string? reason = null);
@@ -59,7 +59,7 @@ public interface IApprovalService
 /// trading.perpetual / trading.account 不在內、AutoTrader 仍能照常跑。
 /// 之後想加更多受控 capability 直接補進這個集合。
 /// </summary>
-public class ApprovalService : IApprovalService
+public class TradingApprovalService : ITradingApprovalService
 {
     private readonly BrokerDb _db;
 
@@ -92,7 +92,7 @@ public class ApprovalService : IApprovalService
         "trading.order::get_order",
     };
 
-    public ApprovalService(BrokerDb db) { _db = db; }
+    public TradingApprovalService(BrokerDb db) { _db = db; }
 
     public bool RequiresApproval(string capabilityId, string route)
     {
@@ -103,17 +103,17 @@ public class ApprovalService : IApprovalService
         return RequiringApprovalRoutes.Contains(key);
     }
 
-    public ApprovalRequest GetOrCreatePending(
+    public TradingApprovalRequest GetOrCreatePending(
         string traceId, string capabilityId, string route, string payload,
         string principalId, string role)
     {
         // 同 trace_id 已經有紀錄 → 回原本的（不重複建）
-        var existing = _db.QueryFirst<ApprovalRequest>(
-            "SELECT * FROM approval_requests WHERE trace_id = @traceId LIMIT 1",
+        var existing = _db.QueryFirst<TradingApprovalRequest>(
+            "SELECT * FROM trading_approval_requests WHERE trace_id = @traceId LIMIT 1",
             new { traceId });
         if (existing != null) return existing;
 
-        var req = new ApprovalRequest
+        var req = new TradingApprovalRequest
         {
             ApprovalId = IdGen.New("apr"),
             TraceId = traceId,
@@ -129,20 +129,20 @@ public class ApprovalService : IApprovalService
         return req;
     }
 
-    public List<ApprovalRequest> List(string? status = null, int limit = 50)
+    public List<TradingApprovalRequest> List(string? status = null, int limit = 50)
     {
         if (string.IsNullOrEmpty(status))
-            return _db.Query<ApprovalRequest>(
-                "SELECT * FROM approval_requests ORDER BY requested_at DESC LIMIT @limit",
+            return _db.Query<TradingApprovalRequest>(
+                "SELECT * FROM trading_approval_requests ORDER BY requested_at DESC LIMIT @limit",
                 new { limit });
-        return _db.Query<ApprovalRequest>(
-            "SELECT * FROM approval_requests WHERE status = @status ORDER BY requested_at DESC LIMIT @limit",
+        return _db.Query<TradingApprovalRequest>(
+            "SELECT * FROM trading_approval_requests WHERE status = @status ORDER BY requested_at DESC LIMIT @limit",
             new { status, limit });
     }
 
-    public ApprovalRequest? Get(string approvalId)
-        => _db.QueryFirst<ApprovalRequest>(
-            "SELECT * FROM approval_requests WHERE approval_id = @id",
+    public TradingApprovalRequest? Get(string approvalId)
+        => _db.QueryFirst<TradingApprovalRequest>(
+            "SELECT * FROM trading_approval_requests WHERE approval_id = @id",
             new { id = approvalId });
 
     public bool Approve(string approvalId, string decidedBy, string? reason = null)

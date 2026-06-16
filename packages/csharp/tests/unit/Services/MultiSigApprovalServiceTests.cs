@@ -32,13 +32,13 @@ public class MultiSigApprovalServiceTests : IDisposable
     }
     public void Dispose() => _db.Dispose();
 
-    private MultiSigApprovalService NewService(IApprovalService inner)
+    private MultiSigApprovalService NewService(ITradingApprovalService inner)
         => new(inner, _db, Substitute.For<IAuditService>(), new NullLogger<MultiSigApprovalService>());
 
-    private static IApprovalService FakeInner(ApprovalRequest record, out List<(string Aid, string By, string? Reason, string Action)> calls)
+    private static ITradingApprovalService FakeInner(TradingApprovalRequest record, out List<(string Aid, string By, string? Reason, string Action)> calls)
     {
         var captured = new List<(string, string, string?, string)>();
-        var mock = Substitute.For<IApprovalService>();
+        var mock = Substitute.For<ITradingApprovalService>();
         mock.Get(record.ApprovalId).Returns(record);
         mock.Approve(record.ApprovalId, Arg.Any<string>(), Arg.Any<string?>())
             .Returns(ci => { captured.Add((ci.ArgAt<string>(0), ci.ArgAt<string>(1), ci.ArgAt<string?>(2), "approve")); return true; });
@@ -48,7 +48,7 @@ public class MultiSigApprovalServiceTests : IDisposable
         return mock;
     }
 
-    private static ApprovalRequest NewRecord(string cap = "trading.order")
+    private static TradingApprovalRequest NewRecord(string cap = "trading.order")
         => new()
         {
             ApprovalId = "apr_test_" + Guid.NewGuid().ToString("N")[..8],

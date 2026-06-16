@@ -5,7 +5,7 @@ namespace Broker.Models;
 /// <summary>
 /// I1 — 個別 approver 的簽核紀錄。N-of-M multi-sig 用 COUNT 統計。
 ///
-/// 為什麼跟 ApprovalRequest 分開：原表只記「最後決定」（decided_by 一個欄位）、
+/// 為什麼跟 TradingApprovalRequest 分開：原表只記「最後決定」（decided_by 一個欄位）、
 /// multi-sig 需要保留「每個簽核人各自的決定」、必須獨立表才支援查 audit / 撤回 / 替換。
 ///
 /// 同 (approval_id, approver_pid) 唯一 — 一人對同一單只能簽一次。

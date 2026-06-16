@@ -15,7 +15,7 @@ namespace Broker.Services;
 ///     → MultiSigApprovalService     (I1 — 攔截 Approve、看是不是要 N-of-M)
 ///       → TimeAwareApprovalService  (H2 — 時段檢查)
 ///         → TemplateAwareApprovalService (H3 — 自動套用 template)
-///           → ApprovalService       (Benson 原作)
+///           → TradingApprovalService       (Benson 原作)
 ///
 /// Approve 流程：
 /// 1. 寫一筆 ApprovalDecisionRecord (approver_pid, approved)
@@ -27,14 +27,14 @@ namespace Broker.Services;
 ///
 /// 重複簽：同 approver 對同一 approval_id 第二次 approve = 不增加計數（idempotent）、回 true。
 /// </summary>
-public class MultiSigApprovalService : IApprovalService
+public class MultiSigApprovalService : ITradingApprovalService
 {
-    private readonly IApprovalService _inner;
+    private readonly ITradingApprovalService _inner;
     private readonly BrokerDb _db;
     private readonly IAuditService _audit;
     private readonly ILogger<MultiSigApprovalService> _logger;
 
-    public MultiSigApprovalService(IApprovalService inner, BrokerDb db,
+    public MultiSigApprovalService(ITradingApprovalService inner, BrokerDb db,
         IAuditService audit, ILogger<MultiSigApprovalService> logger)
     {
         _inner = inner; _db = db; _audit = audit; _logger = logger;
@@ -43,13 +43,13 @@ public class MultiSigApprovalService : IApprovalService
     public bool RequiresApproval(string capabilityId, string route)
         => _inner.RequiresApproval(capabilityId, route);
 
-    public ApprovalRequest GetOrCreatePending(string traceId, string capabilityId, string route,
+    public TradingApprovalRequest GetOrCreatePending(string traceId, string capabilityId, string route,
         string payload, string principalId, string role)
         => _inner.GetOrCreatePending(traceId, capabilityId, route, payload, principalId, role);
 
-    public List<ApprovalRequest> List(string? status = null, int limit = 50) => _inner.List(status, limit);
+    public List<TradingApprovalRequest> List(string? status = null, int limit = 50) => _inner.List(status, limit);
 
-    public ApprovalRequest? Get(string approvalId) => _inner.Get(approvalId);
+    public TradingApprovalRequest? Get(string approvalId) => _inner.Get(approvalId);
 
     public bool Approve(string approvalId, string decidedBy, string? reason = null)
     {

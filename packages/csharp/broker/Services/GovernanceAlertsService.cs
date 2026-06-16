@@ -32,7 +32,7 @@ namespace Broker.Services;
 public class GovernanceAlertsService : BackgroundService
 {
     private readonly HealthScoreService _healthSvc;
-    private readonly IApprovalService _approval;
+    private readonly ITradingApprovalService _approval;
     private readonly IExecutionDispatcher _dispatcher;
     private readonly IWorkerRegistry _registry;
     private readonly IHttpClientFactory _httpFactory;
@@ -52,7 +52,7 @@ public class GovernanceAlertsService : BackgroundService
 
     public GovernanceAlertsService(
         HealthScoreService healthSvc,
-        IApprovalService approval,
+        ITradingApprovalService approval,
         IExecutionDispatcher dispatcher,
         IWorkerRegistry registry,
         IHttpClientFactory httpFactory,

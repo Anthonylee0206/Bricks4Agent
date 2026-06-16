@@ -17,8 +17,8 @@ namespace BrokerCore.Models;
 ///
 /// 列為 audit 鏈的補強——本表是核准 metadata、底層派發過程的審計仍然在 audit_events。
 /// </summary>
-[Table("approval_requests")]
-public class ApprovalRequest
+[Table("trading_approval_requests")]
+public class TradingApprovalRequest
 {
     // [Key] 預設 AutoIncrement=true、SQLite 會強行做 INTEGER PRIMARY KEY、把 IdGen.New("apr")
     // 產的 string 吃掉換成 int 自動編號（split-brain：記憶體跑 string、DB 存 int）。

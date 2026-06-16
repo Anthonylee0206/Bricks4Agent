@@ -6,7 +6,7 @@ using BrokerCore.Services;
 namespace Broker.Services;
 
 /// <summary>
-/// H3 — IApprovalService 裝飾器：先讓 Benson 的 ApprovalService 正常寫一筆 pending、
+/// H3 — ITradingApprovalService 裝飾器：先讓 Benson 的 TradingApprovalService 正常寫一筆 pending、
 /// 然後 ApprovalTemplateMatcher 比對；若命中 enabled template 就立刻 Approve()、
 /// 並寫 AUTO_APPROVED_BY_TEMPLATE 進 audit_events（hash chain 防被改）。
 ///
@@ -15,14 +15,14 @@ namespace Broker.Services;
 ///
 /// 不命中 / 解析失敗 / template 全 disabled → 完全走原流程、不影響行為。
 /// </summary>
-public class TemplateAwareApprovalService : IApprovalService
+public class TemplateAwareApprovalService : ITradingApprovalService
 {
-    private readonly IApprovalService _inner;
+    private readonly ITradingApprovalService _inner;
     private readonly ApprovalTemplateMatcher _matcher;
     private readonly IAuditService _audit;
     private readonly ILogger<TemplateAwareApprovalService> _logger;
 
-    public TemplateAwareApprovalService(IApprovalService inner, ApprovalTemplateMatcher matcher,
+    public TemplateAwareApprovalService(ITradingApprovalService inner, ApprovalTemplateMatcher matcher,
         IAuditService audit, ILogger<TemplateAwareApprovalService> logger)
     {
         _inner = inner; _matcher = matcher; _audit = audit; _logger = logger;
@@ -31,7 +31,7 @@ public class TemplateAwareApprovalService : IApprovalService
     public bool RequiresApproval(string capabilityId, string route)
         => _inner.RequiresApproval(capabilityId, route);
 
-    public ApprovalRequest GetOrCreatePending(string traceId, string capabilityId, string route,
+    public TradingApprovalRequest GetOrCreatePending(string traceId, string capabilityId, string route,
         string payload, string principalId, string role)
     {
         var record = _inner.GetOrCreatePending(traceId, capabilityId, route, payload, principalId, role);
@@ -82,8 +82,8 @@ public class TemplateAwareApprovalService : IApprovalService
         return record;
     }
 
-    public List<ApprovalRequest> List(string? status = null, int limit = 50) => _inner.List(status, limit);
-    public ApprovalRequest? Get(string approvalId) => _inner.Get(approvalId);
+    public List<TradingApprovalRequest> List(string? status = null, int limit = 50) => _inner.List(status, limit);
+    public TradingApprovalRequest? Get(string approvalId) => _inner.Get(approvalId);
     public bool Approve(string approvalId, string decidedBy, string? reason = null)
         => _inner.Approve(approvalId, decidedBy, reason);
     public bool Reject(string approvalId, string decidedBy, string? reason = null)

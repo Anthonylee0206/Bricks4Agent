@@ -237,15 +237,15 @@ builder.Services.AddSingleton<Broker.Services.LeaderGuard>();
 builder.Services.AddHostedService<Broker.Services.GovernanceAlertsService>();
 
 // ── Step 4.7: Approve-before-execute（高風險 capability 需 admin 點按 approve） ──
-// H3 — Approval template matcher（在 IApprovalService 註冊前先註冊、底下 decorator 會用到）
+// H3 — Approval template matcher（在 ITradingApprovalService 註冊前先註冊、底下 decorator 會用到）
 builder.Services.AddSingleton<Broker.Services.ApprovalTemplateMatcher>();
 // H2 — Time-windowed ACL service
 builder.Services.AddSingleton<Broker.Services.TimeAclService>();
 
-// 四層裝飾鏈：MultiSig → Time → Template → 原 ApprovalService
-builder.Services.AddSingleton<IApprovalService>(sp =>
+// 四層裝飾鏈：MultiSig → Time → Template → 原 TradingApprovalService
+builder.Services.AddSingleton<ITradingApprovalService>(sp =>
 {
-    var inner = new ApprovalService(sp.GetRequiredService<BrokerDb>());
+    var inner = new TradingApprovalService(sp.GetRequiredService<BrokerDb>());
     var templateAware = new Broker.Services.TemplateAwareApprovalService(
         inner,
         sp.GetRequiredService<Broker.Services.ApprovalTemplateMatcher>(),
@@ -522,7 +522,7 @@ if (poolEnabled)
                 sp.GetRequiredService<ILogger<PoolDispatcher>>(),
                 sp.GetService<IAuditService>(),    // 讓 dashboard direct-dispatch 也能被 trace
                 sp.GetService<ICapabilityAclService>(),   // role-based capability allowlist
-                sp.GetService<IApprovalService>(),        // approve-before-execute for sensitive caps
+                sp.GetService<ITradingApprovalService>(),        // approve-before-execute for sensitive caps
                 sp.GetService<IShutdownState>());         // graceful shutdown gate
             return new StrictPoolDispatcher(
                 poolDispatcher,
@@ -552,7 +552,7 @@ if (poolEnabled)
                 sp.GetRequiredService<ILogger<PoolDispatcher>>(),
                 sp.GetService<IAuditService>(),    // 讓 dashboard direct-dispatch 也能被 trace
                 sp.GetService<ICapabilityAclService>(),   // role-based capability allowlist
-                sp.GetService<IApprovalService>(),        // approve-before-execute for sensitive caps
+                sp.GetService<ITradingApprovalService>(),        // approve-before-execute for sensitive caps
                 sp.GetService<IShutdownState>());         // graceful shutdown gate
             return new FallbackDispatcher(
                 poolDispatcher, inProcess, inProcess.CanHandle,

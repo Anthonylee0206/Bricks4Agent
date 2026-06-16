@@ -9,7 +9,7 @@ namespace Broker.Endpoints;
 
 /// <summary>
 /// Forensics endpoint —— 把同一條 trace / 同一個時間窗 / 同一個 symbol 相關的所有
-/// audit_events + approval_requests + llm_reasoning_audit 拉出來、按 ts 排序回傳。
+/// audit_events + trading_approval_requests + llm_reasoning_audit 拉出來、按 ts 排序回傳。
 ///
 /// 兩個對外端點：
 ///   GET  /api/v1/forensics/timeline   — 純資料聚合、JSON 回（dashboard 表格用）
@@ -47,12 +47,12 @@ public static class ForensicsEndpoints
         var auditEvents = db.Query<AuditEvent>(auditSql,
             new { since, until, traceId, symbolLike, caller = callerPrincipalId, limit });
 
-        var aprSql = "SELECT * FROM approval_requests WHERE requested_at BETWEEN @since AND @until";
+        var aprSql = "SELECT * FROM trading_approval_requests WHERE requested_at BETWEEN @since AND @until";
         if (!string.IsNullOrEmpty(traceId)) aprSql += " AND trace_id = @traceId";
         if (!string.IsNullOrEmpty(symbol))  aprSql += " AND (route LIKE @symbolLike OR payload LIKE @symbolLike)";
         if (!isAdmin)                       aprSql += " AND principal_id = @caller";
         aprSql += " ORDER BY requested_at DESC LIMIT @limit";
-        var approvals = db.Query<ApprovalRequest>(aprSql,
+        var approvals = db.Query<TradingApprovalRequest>(aprSql,
             new { since, until, traceId, symbolLike, caller = callerPrincipalId, limit });
 
         var llmSql = "SELECT * FROM llm_reasoning_audit WHERE occurred_at BETWEEN @since AND @until";

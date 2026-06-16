@@ -35,7 +35,7 @@ public class DataBrowserEndpointsTests
     [Theory]
     [InlineData("INSERT INTO audit_events VALUES (1)")]
     [InlineData("UPDATE agent_inbox_tasks SET status = 'pending'")]
-    [InlineData("DELETE FROM approval_requests")]
+    [InlineData("DELETE FROM trading_approval_requests")]
     [InlineData("DROP TABLE audit_events")]
     [InlineData("ALTER TABLE x ADD COLUMN y")]
     [InlineData("CREATE TABLE foo (id INT)")]

@@ -10,9 +10,9 @@ using Unit.Tests.Helpers;
 namespace Unit.Tests.Services;
 
 /// <summary>
-/// 4 層 IApprovalService 裝飾鏈端到端測試。Program.cs 的 DI 順序錯了會在這層抓到。
+/// 4 層 ITradingApprovalService 裝飾鏈端到端測試。Program.cs 的 DI 順序錯了會在這層抓到。
 ///
-/// 鏈：MultiSigApprovalService → TimeAwareApprovalService → TemplateAwareApprovalService → ApprovalService
+/// 鏈：MultiSigApprovalService → TimeAwareApprovalService → TemplateAwareApprovalService → TradingApprovalService
 ///
 /// 不變式（用真 BrokerDb / 真 ApprovalService、不 mock）：
 /// 1. RequiresApproval 走最外層的 TimeAware（時段外強制 require）
@@ -23,7 +23,7 @@ namespace Unit.Tests.Services;
 public class ApprovalChainIntegrationTests : IDisposable
 {
     private readonly BrokerDb _db;
-    private readonly IApprovalService _chain;
+    private readonly ITradingApprovalService _chain;
     private readonly TimeAclService _timeAcl;
     private readonly ApprovalTemplateMatcher _matcher;
 
@@ -35,7 +35,7 @@ public class ApprovalChainIntegrationTests : IDisposable
         _db.EnsureTable<MultiSigRule>();
         _db.EnsureTable<ApprovalDecisionRecord>();
 
-        var inner = new ApprovalService(_db);
+        var inner = new TradingApprovalService(_db);
         var audit = Substitute.For<IAuditService>();
         _matcher = new ApprovalTemplateMatcher(_db, new NullLogger<ApprovalTemplateMatcher>());
         _timeAcl = new TimeAclService(_db, new NullLogger<TimeAclService>());
@@ -53,7 +53,7 @@ public class ApprovalChainIntegrationTests : IDisposable
     [Fact]
     public void RequiresApproval_TradingOrder_AlwaysTrue_FromInnerHardcodedList()
     {
-        // 原 ApprovalService 預設 trading.order ∈ require list、最外層應如實傳遞 true
+        // 原 TradingApprovalService 預設 trading.order ∈ require list、最外層應如實傳遞 true
         _chain.RequiresApproval("trading.order", "place_order").Should().BeTrue();
     }
 
@@ -61,7 +61,7 @@ public class ApprovalChainIntegrationTests : IDisposable
     public void RequiresApproval_TradingOrder_ReadOnlyRoutes_Exempt()
     {
         // 修:儀表板 poll list_orders 洗審核。只讀 route 放行、write route 仍受控。
-        var inner = new ApprovalService(_db);
+        var inner = new TradingApprovalService(_db);
         inner.RequiresApproval("trading.order", "list_orders").Should().BeFalse();
         inner.RequiresApproval("trading.order", "get_order").Should().BeFalse();
         inner.RequiresApproval("trading.order", "place_order").Should().BeTrue();

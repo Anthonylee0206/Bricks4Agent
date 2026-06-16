@@ -204,7 +204,7 @@ public static class AdminEndpoints
         });
 
         // ── Approval workflow（高風險 capability 需 admin 點 approve）──
-        admin.MapGet("/approvals", (HttpContext ctx, IApprovalService aprSvc) =>
+        admin.MapGet("/approvals", (HttpContext ctx, ITradingApprovalService aprSvc) =>
         {
             if (!RequireAdmin(ctx, out var denied)) return denied;
             var status = ctx.Request.Query.TryGetValue("status", out var s) ? s.ToString() : "pending";
@@ -231,7 +231,7 @@ public static class AdminEndpoints
             })));
         });
 
-        admin.MapPost("/approvals/{id}/approve", (string id, HttpContext ctx, IApprovalService aprSvc) =>
+        admin.MapPost("/approvals/{id}/approve", (string id, HttpContext ctx, ITradingApprovalService aprSvc) =>
         {
             if (!RequireAdmin(ctx, out var denied)) return denied;
             var body = RequestBodyHelper.GetBody(ctx);
@@ -242,7 +242,7 @@ public static class AdminEndpoints
             return Results.Ok(ApiResponseHelper.Success(new { approval_id = id, status = "approved" }));
         });
 
-        admin.MapPost("/approvals/{id}/reject", (string id, HttpContext ctx, IApprovalService aprSvc) =>
+        admin.MapPost("/approvals/{id}/reject", (string id, HttpContext ctx, ITradingApprovalService aprSvc) =>
         {
             if (!RequireAdmin(ctx, out var denied)) return denied;
             var body = RequestBodyHelper.GetBody(ctx);
@@ -257,7 +257,7 @@ public static class AdminEndpoints
         // 把「approve → caller retry」兩步合一：dispatcher 看到 status='approved' 直接放行
         // 派發時 PrincipalId 仍用原申請者、責任歸屬正確；audit 自動寫 DISPATCH_APPROVED + STARTED + SUCCEEDED
         admin.MapPost("/approvals/{id}/approve-and-dispatch", async (string id, HttpContext ctx,
-            IApprovalService aprSvc, BrokerCore.Services.IExecutionDispatcher dispatcher) =>
+            ITradingApprovalService aprSvc, BrokerCore.Services.IExecutionDispatcher dispatcher) =>
         {
             if (!RequireAdmin(ctx, out var denied)) return denied;
             var body = RequestBodyHelper.GetBody(ctx);

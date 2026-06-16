@@ -4592,7 +4592,7 @@ const app=createApp({
     const sqlPresets = [
       { label:'最近 20 筆 audit_events', sql:'SELECT trace_id, event_type, principal_id, resource_ref, occurred_at FROM audit_events ORDER BY occurred_at DESC LIMIT 20' },
       { label:'最近 10 筆 agent_inbox_tasks', sql:'SELECT seq, agent_id, status, model, latency_ms, created_at FROM agent_inbox_tasks ORDER BY seq DESC LIMIT 10' },
-      { label:'最近 10 筆 approval_requests', sql:'SELECT approval_id, capability_id, route, status, requested_at, decided_by FROM approval_requests ORDER BY requested_at DESC LIMIT 10' },
+      { label:'最近 10 筆 trading_approval_requests', sql:'SELECT approval_id, capability_id, route, status, requested_at, decided_by FROM trading_approval_requests ORDER BY requested_at DESC LIMIT 10' },
       { label:'按 event_type 分群（24h）', sql:"SELECT event_type, COUNT(*) AS cnt FROM audit_events WHERE occurred_at >= datetime('now', '-1 day') GROUP BY event_type ORDER BY cnt DESC LIMIT 30" },
       { label:'按 agent_id 分群 inbox 任務', sql:'SELECT agent_id, status, COUNT(*) AS cnt FROM agent_inbox_tasks GROUP BY agent_id, status ORDER BY agent_id, status' },
       { label:'每日 LLM reasoning 數', sql:"SELECT DATE(occurred_at) AS day, COUNT(*) AS cnt FROM llm_reasoning_audit GROUP BY day ORDER BY day DESC LIMIT 14" },

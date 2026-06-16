@@ -38,7 +38,7 @@ public class PoolDispatcher : IExecutionDispatcher
     private readonly ILogger<PoolDispatcher> _logger;
     private readonly IAuditService? _audit;
     private readonly ICapabilityAclService? _acl;
-    private readonly IApprovalService? _approval;
+    private readonly ITradingApprovalService? _approval;
     private readonly IShutdownState? _shutdown;
 
     public PoolDispatcher(
@@ -47,7 +47,7 @@ public class PoolDispatcher : IExecutionDispatcher
         ILogger<PoolDispatcher> logger,
         IAuditService? audit = null,
         ICapabilityAclService? acl = null,
-        IApprovalService? approval = null,
+        ITradingApprovalService? approval = null,
         IShutdownState? shutdown = null)
     {
         _registry = registry;

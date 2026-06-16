@@ -39,7 +39,7 @@ public class BrokerDbInitializer
         _db.EnsureTable<ContainerSession>();
         _db.EnsureTable<ExecutionRequest>();
         _db.EnsureTable<AuditEvent>();
-        _db.EnsureTable<ApprovalRequest>();
+        _db.EnsureTable<TradingApprovalRequest>();
         _db.EnsureTable<PrincipalCapabilityOverride>();
         _db.EnsureTable<HealthScoreSnapshot>();
         _db.EnsureTable<PerpDailyOpenBalance>();
@@ -198,9 +198,9 @@ public class BrokerDbInitializer
         TryExecute("ALTER TABLE azure_iis_deployment_targets ADD COLUMN health_check_path TEXT DEFAULT ''");
         TryExecute("ALTER TABLE azure_iis_deployment_targets ADD COLUMN health_check_base_url TEXT DEFAULT ''");
 
-        // ApprovalRequest 派發冪等：避免「立刻執行」按一次下一單真錢、按 N 次下 N 單
-        TryExecute("ALTER TABLE approval_requests ADD COLUMN dispatched_at TEXT");
-        TryExecute("ALTER TABLE approval_requests ADD COLUMN dispatched_by TEXT");
+        // TradingApprovalRequest 派發冪等：避免「立刻執行」按一次下一單真錢、按 N 次下 N 單
+        TryExecute("ALTER TABLE trading_approval_requests ADD COLUMN dispatched_at TEXT");
+        TryExecute("ALTER TABLE trading_approval_requests ADD COLUMN dispatched_by TEXT");
 
         // AgentInbox push 冪等（2026-05-29）：同 (agent_id, idempotency_key) 重試/重啟接手不重建任務
         TryExecute("ALTER TABLE agent_inbox_tasks ADD COLUMN idempotency_key TEXT");
@@ -216,12 +216,12 @@ public class BrokerDbInitializer
 
     private void MigrateApprovalIdToText()
     {
-        // pragma_table_info('approval_requests') 回 cid/name/type/...、找 approval_id 那欄
+        // pragma_table_info('trading_approval_requests') 回 cid/name/type/...、找 approval_id 那欄
         string colType;
         try
         {
             colType = _db.Scalar<string>(
-                "SELECT type FROM pragma_table_info('approval_requests') WHERE name = 'approval_id'") ?? "";
+                "SELECT type FROM pragma_table_info('trading_approval_requests') WHERE name = 'approval_id'") ?? "";
         }
         catch
         {
@@ -232,9 +232,9 @@ public class BrokerDbInitializer
         if (colType.Equals("TEXT", StringComparison.OrdinalIgnoreCase)) return;  // 已是新 schema
 
         // SQLite ALTER TABLE 不支援改 column 型別、走 rename + create + copy + drop
-        TryExecute("ALTER TABLE approval_requests RENAME TO approval_requests_legacy_int");
+        TryExecute("ALTER TABLE trading_approval_requests RENAME TO trading_approval_requests_legacy_int");
         TryExecute(@"
-            CREATE TABLE approval_requests (
+            CREATE TABLE trading_approval_requests (
                 approval_id TEXT PRIMARY KEY,
                 trace_id TEXT NOT NULL,
                 capability_id TEXT NOT NULL,
@@ -251,7 +251,7 @@ public class BrokerDbInitializer
                 dispatched_by TEXT
             )");
         TryExecute(@"
-            INSERT INTO approval_requests (
+            INSERT INTO trading_approval_requests (
                 approval_id, trace_id, capability_id, route, payload,
                 principal_id, role, requested_at, status, decided_by, decided_at,
                 decision_reason, dispatched_at, dispatched_by
@@ -260,8 +260,8 @@ public class BrokerDbInitializer
                 'apr_legacy_' || approval_id, trace_id, capability_id, route, payload,
                 principal_id, role, requested_at, status, decided_by, decided_at,
                 decision_reason, dispatched_at, dispatched_by
-            FROM approval_requests_legacy_int");
-        TryExecute("DROP TABLE approval_requests_legacy_int");
+            FROM trading_approval_requests_legacy_int");
+        TryExecute("DROP TABLE trading_approval_requests_legacy_int");
     }
 
     /// <summary>

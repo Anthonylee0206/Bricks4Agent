@@ -42,13 +42,13 @@ public static class DataBrowserEndpoints
 
             var rows = new List<ErrorRow>();
 
-            // 1. approval_requests WHERE status='rejected'
+            // 1. trading_approval_requests WHERE status='rejected'
             if (sourceFilter == null || sourceFilter == "approval")
             {
-                var sql = "SELECT * FROM approval_requests WHERE status = 'rejected' AND requested_at BETWEEN @sinceStr AND @untilStr";
+                var sql = "SELECT * FROM trading_approval_requests WHERE status = 'rejected' AND requested_at BETWEEN @sinceStr AND @untilStr";
                 if (!isAdmin) sql += " AND principal_id = @caller";
                 sql += " ORDER BY requested_at DESC LIMIT @limit";
-                var data = db.Query<ApprovalRequest>(sql,
+                var data = db.Query<TradingApprovalRequest>(sql,
                     new { sinceStr, untilStr, caller = callerPrincipalId, limit });
                 foreach (var a in data)
                 {
