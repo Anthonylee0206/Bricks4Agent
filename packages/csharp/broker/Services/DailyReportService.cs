@@ -338,6 +338,36 @@ public class DailyReportService : BackgroundService
         sb.AppendLine();
         sb.AppendLine($"合計 {totalClosed} closed · {totalOpen} open。樣本 <5 closed 不算勝率(影子期初常見)。");
 
+        // ── VRP / 波動 carry shadow(2026-06-16、獨立於方向性 scanner)── 裸/封頂雙 PnL 對照 ──
+        try
+        {
+            var vrpLegs = _db.Query<BrokerCore.Models.VrpShadowLegEntry>("SELECT * FROM vrp_shadow_legs");
+            var vrpSettled = vrpLegs.Where(l => l.SettledAt != null).ToList();
+            int vrpOpen = vrpLegs.Count(l => l.SettledAt == null);
+            int vrpNew = vrpLegs.Count(l => l.CreatedAt >= since);
+            sb.AppendLine();
+            if (vrpSettled.Count == 0)
+            {
+                sb.AppendLine($"**VRP 波動 carry shadow（BTC）**: 0 settled · {vrpOpen} open · 本期 +{vrpNew}開 (資料未足)");
+            }
+            else
+            {
+                int vrpWins = vrpSettled.Count(l => l.PnlPctCapped > 0);
+                decimal vrpWr = (decimal)vrpWins / vrpSettled.Count * 100m;
+                decimal avgNaked = vrpSettled.Average(l => l.PnlPctNaked);
+                decimal avgCapped = vrpSettled.Average(l => l.PnlPctCapped);
+                decimal cumCapped = vrpSettled.Sum(l => l.PnlPctCapped);
+                decimal worstNaked = vrpSettled.Min(l => l.PnlPctNaked);
+                decimal worstCapped = vrpSettled.Min(l => l.PnlPctCapped);
+                decimal avgImplied = vrpSettled.Average(l => l.DvolEntry);
+                decimal avgRealized = vrpSettled.Average(l => l.RealizedVol);
+                sb.AppendLine($"**VRP 波動 carry shadow（BTC）**: {vrpSettled.Count}settled 勝率{vrpWr:F0}% · {vrpOpen}open 本期+{vrpNew}");
+                sb.AppendLine($"　封頂累計{(cumCapped >= 0 ? "+" : "")}{cumCapped:F1}% 均{avgCapped:F1}%/窗(最差{worstCapped:F0}%) vs 裸賣均{avgNaked:F1}%(最差{worstNaked:F0}%)→ 封頂救左尾");
+                sb.AppendLine($"　隱含均{avgImplied:F1} vs 實現均{avgRealized:F1}(差>0 = 賣方收到溢酬)");
+            }
+        }
+        catch (Exception ex) { _logger.LogDebug(ex, "VRP shadow report section skipped (likely uninitialized)"); }
+
         var body = sb.ToString();
         var title = $"🔬 Shadow Scanner 週報 · {DateTime.UtcNow:yyyy-MM-dd}";
         if (!push) return (true, body);
