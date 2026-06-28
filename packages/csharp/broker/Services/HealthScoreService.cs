@@ -40,11 +40,21 @@ public class HealthScoreService
         var now = DateTime.UtcNow;
 
         // 取一次 container stats（一次 docker stats 呼叫、避免 per-worker 重複查）
+        // 同時取 ManagedContainer 清單，建立 worker_id → container_id 的權威對應，
+        // 供 ScoreResource 精確 join（取代舊版脆弱的 container_name 前綴比對）。
         IReadOnlyList<ContainerStats>? stats = null;
+        var workerToContainerId = new Dictionary<string, string>(StringComparer.Ordinal);
         if (_containerMgr != null)
         {
             try { stats = await _containerMgr.GetStatsAsync(ct); }
             catch { /* container runtime 不在 → resource 分量會被略過 */ }
+            try
+            {
+                foreach (var m in await _containerMgr.ListManagedAsync(ct))
+                    if (!string.IsNullOrEmpty(m.WorkerId) && !string.IsNullOrEmpty(m.ContainerId))
+                        workerToContainerId[m.WorkerId] = m.ContainerId;
+            }
+            catch { /* 對應拿不到 → ScoreResource 退保守後備比對 */ }
         }
 
         // 過去 15 min 每個 capability 的 dispatch 成功/失敗計數
@@ -57,7 +67,7 @@ public class HealthScoreService
         {
             var hb = ScoreHeartbeat(now - w.LastHeartbeat);
             var dispatch = ScoreDispatch(dispatchByWorker.TryGetValue(w.WorkerId, out var ds) ? ds : default);
-            var resource = ScoreResource(stats, w.WorkerId);
+            var resource = ScoreResource(stats, w.WorkerId, workerToContainerId);
 
             // 加權平均，跳過 null（沒資料的分量）
             var weighted = WeightedAvg(
@@ -124,13 +134,13 @@ public class HealthScoreService
         };
     }
 
-    private static ResourceScore? ScoreResource(IReadOnlyList<ContainerStats>? stats, string workerId)
+    private static ResourceScore? ScoreResource(
+        IReadOnlyList<ContainerStats>? stats,
+        string workerId,
+        IReadOnlyDictionary<string, string> workerToContainerId)
     {
         if (stats == null) return null;
-        // worker_id 跟 container_name 不一定完全對應；用「container_name 包含 worker_id 第一段」做寬鬆匹配
-        var prefix = workerId.Split('-')[0];   // e.g. trading-wkr-xxx → "trading"
-        var s = stats.FirstOrDefault(x =>
-            (x.ContainerName ?? "").Contains(prefix, StringComparison.OrdinalIgnoreCase));
+        var s = ResolveContainerStats(stats, workerId, workerToContainerId);
         if (s == null) return null;
         var avg = (s.CpuPercent + s.MemoryPercent) / 2.0;
         int score; string label;
@@ -144,6 +154,47 @@ public class HealthScoreService
             CpuPct = (decimal)Math.Round(s.CpuPercent, 1),
             MemPct = (decimal)Math.Round(s.MemoryPercent, 1),
         };
+    }
+
+    /// <summary>
+    /// 把一個 worker 對應到它的 ContainerStats。
+    /// (1) 優先用 ManagedContainer 維護的 worker_id → container_id 權威對應，以 ContainerId 精確 join——
+    ///     修掉舊版 container_name 前綴 Contains 的兩個誤配：①多個同前綴 worker 搶同一容器、
+    ///     把別人的 CPU/mem 算到自己頭上；②底線式 worker_id「wkr_xxx」用 Split('-') 切不開、
+    ///     整串拿去 Contains 必然失配 → resource 分量永遠被略過。
+    /// (2) 無權威對應時（NoOpContainerManager / 容器未被追蹤）退保守比對：只接受 container_name
+    ///     完全相等或完整 worker_id 子字串，絕不用單段前綴亂配。
+    /// public static 純函數：可確定性單元測試，無需 mock docker / registry。
+    /// </summary>
+    public static ContainerStats? ResolveContainerStats(
+        IReadOnlyList<ContainerStats> stats,
+        string workerId,
+        IReadOnlyDictionary<string, string> workerToContainerId)
+    {
+        if (stats == null || stats.Count == 0) return null;
+
+        if (workerToContainerId != null
+            && workerToContainerId.TryGetValue(workerId, out var cid)
+            && !string.IsNullOrEmpty(cid))
+        {
+            var byId = stats.FirstOrDefault(x => ContainerIdMatch(x.ContainerId, cid));
+            if (byId != null) return byId;
+        }
+
+        return stats.FirstOrDefault(x =>
+                   string.Equals(x.ContainerName, workerId, StringComparison.OrdinalIgnoreCase))
+               ?? stats.FirstOrDefault(x =>
+                   !string.IsNullOrEmpty(x.ContainerName)
+                   && x.ContainerName.Contains(workerId, StringComparison.OrdinalIgnoreCase));
+    }
+
+    // docker stats 回短 id（12 字元），ManagedContainer 可能存完整 64 字元 id；
+    // 任一方是另一方的前綴即視為同一容器。
+    private static bool ContainerIdMatch(string statsId, string managedId)
+    {
+        if (string.IsNullOrEmpty(statsId) || string.IsNullOrEmpty(managedId)) return false;
+        return managedId.StartsWith(statsId, StringComparison.OrdinalIgnoreCase)
+            || statsId.StartsWith(managedId, StringComparison.OrdinalIgnoreCase);
     }
 
     private static int WeightedAvg(params (int? value, double weight)[] entries)

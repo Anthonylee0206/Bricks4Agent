@@ -1,5 +1,7 @@
+using System.Text.Json;
 using BrokerCore.Data;
 using BrokerCore.Models;
+using BrokerCore.Services;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
@@ -18,20 +20,28 @@ public class HealthScoreSnapshotService : BackgroundService
     private readonly HealthScoreService _scoreSvc;
     private readonly BrokerDb _db;
     private readonly LeaderGuard _guard;
+    private readonly IObservationService _observations;
     private readonly ILogger<HealthScoreSnapshotService> _logger;
 
     private static readonly TimeSpan TickInterval = TimeSpan.FromMinutes(5);
     private static readonly TimeSpan Retention = TimeSpan.FromDays(7);
 
+    // 連續 N 個 tick 都 critical 才告警（5min × 3 = 持續 ~15min），濾掉瞬間抖動 / 重啟暫態。
+    private const int CriticalAlertThreshold = 3;
+    private int _consecutiveCritical;
+    private bool _alertActive;
+
     public HealthScoreSnapshotService(
         HealthScoreService scoreSvc,
         BrokerDb db,
         LeaderGuard guard,
+        IObservationService observations,
         ILogger<HealthScoreSnapshotService> logger)
     {
         _scoreSvc = scoreSvc;
         _db = db;
         _guard = guard;
+        _observations = observations;
         _logger = logger;
     }
 
@@ -74,6 +84,9 @@ public class HealthScoreSnapshotService : BackgroundService
             CriticalCount = report.CriticalCount,
         });
 
+        // 持續 critical → 記一條治理級觀測告警（進 audit hash-chain、可 dashboard / 外部 watchdog 撈）
+        EvaluateCriticalAlert(report);
+
         // 滾動清理：刪掉超過 retention 的舊 snapshot
         var cutoff = DateTime.UtcNow - Retention;
         try
@@ -85,6 +98,69 @@ public class HealthScoreSnapshotService : BackgroundService
         catch (Exception ex)
         {
             _logger.LogDebug(ex, "Health snapshot retention cleanup failed (non-fatal)");
+        }
+    }
+
+    /// <summary>
+    /// 連續 N 個 snapshot 都 critical 才升一次告警（edge-triggered，恢復才 reset），
+    /// 走 ObservationService → 自動進 audit hash-chain，不外連、不碰密鑰。
+    /// 原本只有 snapshot 時序、無「持續惡化」的主動告警鏈，這裡補上。
+    /// </summary>
+    private void EvaluateCriticalAlert(HealthScoreReport report)
+    {
+        var critical = report.OverallStatus == "critical" || report.CriticalCount > 0;
+        if (!critical)
+        {
+            if (_alertActive)
+                _logger.LogInformation("Health recovered (overall={Score}), clearing critical alert", report.OverallScore);
+            _consecutiveCritical = 0;
+            _alertActive = false;
+            return;
+        }
+
+        _consecutiveCritical++;
+        if (_consecutiveCritical < CriticalAlertThreshold || _alertActive) return;
+        _alertActive = true;  // edge-trigger：持續期間只記一次，避免每 5min 灌 noise
+
+        try
+        {
+            var criticalWorkers = report.Workers
+                .Where(w => w.Status == "critical")
+                .Select(w => w.WorkerId)
+                .ToList();
+
+            _observations.Record(new ObservationEvent
+            {
+                TraceId   = BrokerCore.IdGen.New("htrace"),
+                EventType = "HEALTH_SCORE_CRITICAL",
+                Source    = ObservationSource.Internal,
+                Severity  = ObservationSeverity.Critical,
+                ObservedState = JsonSerializer.Serialize(new
+                {
+                    overallScore  = report.OverallScore,
+                    overallStatus = report.OverallStatus,
+                    workerCount   = report.WorkerCount,
+                    criticalCount = report.CriticalCount,
+                    degradedCount = report.DegradedCount,
+                }),
+                Details = JsonSerializer.Serialize(new
+                {
+                    sustainedTicks = _consecutiveCritical,
+                    thresholdTicks = CriticalAlertThreshold,
+                    criticalWorkers,
+                    note = "Overall worker health critical sustained across snapshots",
+                }),
+            });
+
+            _logger.LogWarning(
+                "Health critical sustained {Ticks} ticks (overall={Score}, criticalWorkers={Count}) — recorded HEALTH_SCORE_CRITICAL observation",
+                _consecutiveCritical, report.OverallScore, criticalWorkers.Count);
+        }
+        catch (Exception ex)
+        {
+            // 告警失敗不可拖垮 snapshot 主流程；放掉 _alertActive 讓下個 tick 再試
+            _alertActive = false;
+            _logger.LogWarning(ex, "Failed to record HEALTH_SCORE_CRITICAL observation");
         }
     }
 
