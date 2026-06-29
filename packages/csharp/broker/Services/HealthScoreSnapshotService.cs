@@ -109,18 +109,15 @@ public class HealthScoreSnapshotService : BackgroundService
     private void EvaluateCriticalAlert(HealthScoreReport report)
     {
         var critical = report.OverallStatus == "critical" || report.CriticalCount > 0;
-        if (!critical)
-        {
-            if (_alertActive)
-                _logger.LogInformation("Health recovered (overall={Score}), clearing critical alert", report.OverallScore);
-            _consecutiveCritical = 0;
-            _alertActive = false;
-            return;
-        }
+        var (next, shouldFire) = NextCriticalAlertState(
+            new CriticalAlertState(_consecutiveCritical, _alertActive), critical, CriticalAlertThreshold);
 
-        _consecutiveCritical++;
-        if (_consecutiveCritical < CriticalAlertThreshold || _alertActive) return;
-        _alertActive = true;  // edge-trigger：持續期間只記一次，避免每 5min 灌 noise
+        if (!critical && _alertActive)
+            _logger.LogInformation("Health recovered (overall={Score}), clearing critical alert", report.OverallScore);
+
+        _consecutiveCritical = next.ConsecutiveCritical;
+        _alertActive = next.AlertActive;
+        if (!shouldFire) return;
 
         try
         {
@@ -162,6 +159,24 @@ public class HealthScoreSnapshotService : BackgroundService
             _alertActive = false;
             _logger.LogWarning(ex, "Failed to record HEALTH_SCORE_CRITICAL observation");
         }
+    }
+
+    /// <summary>連續 critical 告警的純決策狀態(供確定性測試)。</summary>
+    public readonly record struct CriticalAlertState(int ConsecutiveCritical, bool AlertActive);
+
+    /// <summary>
+    /// 純函數:給定前一狀態 + 本 tick 是否 critical + 門檻,算出新狀態與是否該觸發告警。
+    /// edge-triggered:達門檻當下觸發一次,持續期間不重複;非 critical 即 reset 計數與旗標。
+    /// </summary>
+    public static (CriticalAlertState next, bool shouldFire) NextCriticalAlertState(
+        CriticalAlertState prev, bool critical, int threshold)
+    {
+        if (!critical)
+            return (new CriticalAlertState(0, false), false);
+
+        var consecutive = prev.ConsecutiveCritical + 1;
+        var shouldFire = consecutive >= threshold && !prev.AlertActive;
+        return (new CriticalAlertState(consecutive, prev.AlertActive || shouldFire), shouldFire);
     }
 
     /// <summary>查歷史 snapshot（給 endpoint 用）。</summary>
