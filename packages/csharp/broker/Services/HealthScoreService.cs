@@ -107,7 +107,7 @@ public class HealthScoreService
 
     // ── 分量計算 ─────────────────────────────────────────────────────────
 
-    private static HeartbeatScore ScoreHeartbeat(TimeSpan elapsed)
+    public static HeartbeatScore ScoreHeartbeat(TimeSpan elapsed)
     {
         var sec = elapsed.TotalSeconds;
         int score = sec < 30 ? 100 : sec < 60 ? 50 : 0;
@@ -115,7 +115,7 @@ public class HealthScoreService
         return new HeartbeatScore { Score = score, Label = label, AgeSeconds = (int)sec };
     }
 
-    private DispatchScore? ScoreDispatch((int succeeded, int failed) ds)
+    public static DispatchScore? ScoreDispatch((int succeeded, int failed) ds)
     {
         var total = ds.succeeded + ds.failed;
         if (total == 0) return null;  // 沒資料 → 不計入加權
@@ -197,7 +197,7 @@ public class HealthScoreService
             || statsId.StartsWith(managedId, StringComparison.OrdinalIgnoreCase);
     }
 
-    private static int WeightedAvg(params (int? value, double weight)[] entries)
+    public static int WeightedAvg(params (int? value, double weight)[] entries)
     {
         double total = 0, weights = 0;
         foreach (var (v, w) in entries)
@@ -209,7 +209,7 @@ public class HealthScoreService
         return weights == 0 ? 100 : (int)Math.Round(total / weights);
     }
 
-    private static string StatusFor(int score)
+    public static string StatusFor(int score)
         => score >= 80 ? "healthy" : score >= 50 ? "degraded" : "critical";
 
     // ── audit_events 反查每 worker 的成功/失敗計數 ─────────────────────

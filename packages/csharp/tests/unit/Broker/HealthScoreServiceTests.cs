@@ -77,4 +77,53 @@ public class HealthScoreServiceTests
 
         HealthScoreService.ResolveContainerStats(stats, "wkr_unknown", empty).Should().BeNull();
     }
+
+    // ── 計分子函式(純函數、確定性)──────────────────────────────────────
+
+    [Theory]
+    [InlineData(10, 100, "fresh")]
+    [InlineData(45, 50, "stale")]
+    [InlineData(90, 0, "lost")]
+    public void ScoreHeartbeat_BandsBySeconds(int seconds, int expectedScore, string expectedLabel)
+    {
+        var s = HealthScoreService.ScoreHeartbeat(TimeSpan.FromSeconds(seconds));
+        s.Score.Should().Be(expectedScore);
+        s.Label.Should().Be(expectedLabel);
+    }
+
+    [Fact]
+    public void ScoreDispatch_NoData_ReturnsNull()
+        => HealthScoreService.ScoreDispatch((0, 0)).Should().BeNull();
+
+    [Theory]
+    [InlineData(100, 0, 100, "excellent")]
+    [InlineData(97, 3, 70, "marginal")]
+    [InlineData(85, 15, 40, "degraded")]
+    [InlineData(50, 50, 10, "failing")]
+    public void ScoreDispatch_BandsBySuccessRate(int ok, int fail, int expectedScore, string expectedLabel)
+    {
+        var s = HealthScoreService.ScoreDispatch((ok, fail))!;
+        s.Score.Should().Be(expectedScore);
+        s.Label.Should().Be(expectedLabel);
+    }
+
+    [Fact]
+    public void WeightedAvg_AllPresent_WeightsCorrectly()
+        => HealthScoreService.WeightedAvg((100, 0.30), (50, 0.40), (0, 0.30)).Should().Be(50);
+
+    [Fact]
+    public void WeightedAvg_SkipsNullComponents_AndRenormalizes()
+        => HealthScoreService.WeightedAvg((100, 0.30), (null, 0.40), (80, 0.30)).Should().Be(90);
+
+    [Fact]
+    public void WeightedAvg_NoData_DefaultsTo100()
+        => HealthScoreService.WeightedAvg((null, 0.30), (null, 0.40)).Should().Be(100);
+
+    [Theory]
+    [InlineData(80, "healthy")]
+    [InlineData(79, "degraded")]
+    [InlineData(50, "degraded")]
+    [InlineData(49, "critical")]
+    public void StatusFor_Thresholds(int score, string expected)
+        => HealthScoreService.StatusFor(score).Should().Be(expected);
 }
