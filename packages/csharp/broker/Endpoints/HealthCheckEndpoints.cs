@@ -160,8 +160,13 @@ public static class HealthCheckEndpoints
         // GET /api/v1/health/alerts?since_minutes=360&min_severity=2 — 平台健康/worker 觀測告警
         // 補 a4377fab 的閉環:HealthScoreSnapshotService 記的 HEALTH_SCORE_CRITICAL 之前無 HTTP
         // 出口、外部 watchdog 無法輪詢。這裡只走既有 ObservationService.GetAlerts、純讀、不外連。
+        // dead-man(讀取時計算):寫入 loop 若死掉無法自我回報,由本端點在每次讀取時檢查
+        // 「最新 snapshot 距今多久」——超過 3×tick 沒新資料 = 管線停擺,直接在回應裡置頂一條
+        // 合成告警(computed=true、非 DB 事件)。外部 watchdog 只要輪詢本端點就同時覆蓋
+        // 「worker 不健康」與「觀測管線本身死掉」兩種失效。
         hc.MapGet("/alerts", (
-            HttpContext ctx, IObservationService observations) =>
+            HttpContext ctx, IObservationService observations,
+            Broker.Services.HealthScoreSnapshotService snapshots) =>
         {
             var sinceMin = int.TryParse(ctx.Request.Query["since_minutes"].ToString(), out var s)
                 ? Math.Clamp(s, 5, 10080) : 360;  // default 6h, max 7d
@@ -171,22 +176,52 @@ public static class HealthCheckEndpoints
             var alerts = observations.GetAlerts(since, (ObservationSeverity)minSev, limit: 200)
                 .Where(e => IsPlatformHealthAlert(e.EventType))
                 .ToList();
+
+            var lastSnap = snapshots.GetLatestSnapshotTime();
+            var (stalled, ageSeconds) = Broker.Services.HealthScoreSnapshotService.ComputeSnapshotStaleness(
+                lastSnap, DateTime.UtcNow, Broker.Services.HealthScoreSnapshotService.SnapshotTickInterval);
+
+            var items = new List<object>();
+            if (stalled)
+            {
+                // 合成告警(computed on read、非 DB 事件):寫入 loop 死掉時只有讀取端算得出來
+                items.Add(new
+                {
+                    observation_id = (string?)null,
+                    event_type     = "HEALTH_SNAPSHOT_PIPELINE_STALLED",
+                    severity       = ObservationSeverity.Critical.ToString(),
+                    observed_at    = DateTime.UtcNow,
+                    worker_id      = (string?)null,
+                    trace_id       = (string?)null,
+                    observed_state = $"{{\"age_seconds\":{Math.Round(ageSeconds ?? 0)},\"last_captured_at\":\"{lastSnap:O}\"}}",
+                    details        = "(computed on read — dead-man check; not a stored observation event)",
+                });
+            }
+            items.AddRange(alerts.Select(e => (object)new
+            {
+                observation_id = e.ObservationId,
+                event_type     = e.EventType,
+                severity       = e.Severity.ToString(),
+                observed_at    = e.ObservedAt,
+                worker_id      = e.WorkerId,
+                trace_id       = e.TraceId,
+                observed_state = e.ObservedState,
+                details        = e.Details,
+            }));
+
             return Results.Ok(ApiResponseHelper.Success(new
             {
                 since_minutes = sinceMin,
                 min_severity  = ((ObservationSeverity)minSev).ToString(),
-                count         = alerts.Count,
-                alerts = alerts.Select(e => new
+                snapshot_pipeline = new
                 {
-                    observation_id = e.ObservationId,
-                    event_type     = e.EventType,
-                    severity       = e.Severity.ToString(),
-                    observed_at    = e.ObservedAt,
-                    worker_id      = e.WorkerId,
-                    trace_id       = e.TraceId,
-                    observed_state = e.ObservedState,
-                    details        = e.Details,
-                }),
+                    stalled,
+                    age_seconds      = ageSeconds.HasValue ? Math.Round(ageSeconds.Value) : (double?)null,
+                    last_captured_at = lastSnap,
+                    tick_seconds     = Broker.Services.HealthScoreSnapshotService.SnapshotTickInterval.TotalSeconds,
+                },
+                count  = items.Count,
+                alerts = items,
             }));
         });
     }
