@@ -15,9 +15,12 @@ namespace BrokerCore.Models;
 [Table("health_score_snapshots")]
 public class HealthScoreSnapshot
 {
-    [Key, MaxLength(64)]
+    // 2026-10:原本宣告成 string 並由服務產生 "hs_..."，但 [Key] 預設 AutoIncrement=true，
+    // BaseOrm 建表時把這欄建成整數自增主鍵、寫入時也略過它，所產生的字串 ID 從未存進去。
+    // 照實改成 long：建出來的表結構與既有部署完全相同，所以不需要遷移。
+    [Key]
     [Column("snapshot_id")]
-    public string SnapshotId { get; set; } = string.Empty;
+    public long SnapshotId { get; set; }
 
     [Column("captured_at")]
     public DateTime CapturedAt { get; set; } = DateTime.UtcNow;

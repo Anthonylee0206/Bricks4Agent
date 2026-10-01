@@ -60,11 +60,11 @@ public class HealthScoreSnapshotService : BackgroundService
         // 階段②:只有 PRIMARY(或單機)寫 snapshot;多節點時 STANDBY 自我跳過、避免雙寫
         if (!_guard.ShouldRun("health-snapshot")) return;
         var report = await _scoreSvc.ComputeAsync(ct);
-        if (report.WorkerCount == 0) return;  // 沒 worker 連上、別記 noise
+        // 沒有 worker 時也照記（status=no_workers、score=0）。原本這裡直接 return，
+        // 結果 worker 全掛的那段時間在歷史上是空白，看起來像「沒資料」而不是「出事」。
 
         _db.Insert(new HealthScoreSnapshot
         {
-            SnapshotId    = BrokerCore.IdGen.New("hs"),
             CapturedAt    = report.GeneratedAt,
             OverallScore  = report.OverallScore,
             OverallStatus = report.OverallStatus,
