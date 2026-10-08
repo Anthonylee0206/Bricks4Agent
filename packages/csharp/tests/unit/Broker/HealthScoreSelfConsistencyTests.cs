@@ -3,6 +3,7 @@ using Broker.Services;
 using BrokerCore.Data;
 using BrokerCore.Models;
 using FluentAssertions;
+using FunctionPool.Container;
 using FunctionPool.Models;
 using FunctionPool.Network;
 using FunctionPool.Registry;
@@ -161,6 +162,55 @@ public class HealthScoreSelfConsistencyTests
         rows.Should().ContainSingle();
         rows[0].SnapshotId.Should().BePositive();
         rows[0].OverallStatus.Should().Be(HealthScoreService.NoWorkersStatus);
+    }
+
+    // ── 資源分量:worker 對到正確的容器 ───────────────────────────────
+
+    private static ContainerStats Stat(string id, string name, double cpu = 10, double mem = 10) =>
+        new() { ContainerId = id, ContainerName = name, CpuPercent = cpu, MemoryPercent = mem };
+
+    [Fact]
+    public void FindStats_PrefersManagedContainerId_ShortVsFullId()
+    {
+        const string workerId = "wkr_0123456789abcdef";
+        var full = "a1b2c3d4e5f6" + new string('0', 52);
+        var stats = new[] { Stat("ffffffffffff", "b4a-file-worker-other"), Stat("a1b2c3d4e5f6", "unrelated-name") };
+        var managed = new[] { new ManagedContainer { WorkerId = workerId, ContainerId = full } };
+
+        HealthScoreService.FindStatsForWorker(stats, managed, workerId)!.ContainerId.Should().Be("a1b2c3d4e5f6");
+    }
+
+    [Fact]
+    public void FindStats_FallsBackToContainerManagerNamingRule()
+    {
+        // ContainerManager 命名:b4a-{type}-{workerId 前 12 字}
+        const string workerId = "wkr_0123456789abcdef";
+        var stats = new[] { Stat("aaaaaaaaaaaa", "b4a-file-worker-wkr_01234567"), Stat("bbbbbbbbbbbb", "/b4a-file-worker-wkr_01234567") };
+
+        HealthScoreService.FindStatsForWorker(stats, managed: null, workerId)!.ContainerId.Should().Be("aaaaaaaaaaaa");
+    }
+
+    [Fact]
+    public void FindStats_OldPrefixHeuristicCaseNowMatches()
+    {
+        // 舊版取 workerId 第一個 '-' 前那段("wkr_0123456789abcdef",20 字)去比對,
+        // 但容器名稱只帶前 12 字,所以永遠對不到 —— 資源分量從來沒有資料。
+        const string workerId = "wkr_0123456789abcdef";
+        var stats = new[] { Stat("cccccccccccc", "b4a-browser-worker-wkr_01234567") };
+
+        var oldHeuristicMatched = stats.Any(s => s.ContainerName.Contains(workerId.Split('-')[0], StringComparison.OrdinalIgnoreCase));
+        oldHeuristicMatched.Should().BeFalse("這是舊版的行為,用來證明原本確實對不到");
+        HealthScoreService.FindStatsForWorker(stats, null, workerId).Should().NotBeNull();
+    }
+
+    [Fact]
+    public void FindStats_DoesNotBorrowAnotherWorkersContainer()
+    {
+        var stats = new[] { Stat("dddddddddddd", "b4a-file-worker-wkr_zzzzzzzz") };
+
+        HealthScoreService.FindStatsForWorker(stats, null, "wkr_0123456789abcdef").Should().BeNull("對不到就不計,而不是拿別人的數字");
+        HealthScoreService.FindStatsForWorker(null, null, "wkr_x").Should().BeNull();
+        HealthScoreService.FindStatsForWorker(Array.Empty<ContainerStats>(), null, "wkr_x").Should().BeNull();
     }
 
     // ── /health/workers:讀 registry,狀態判斷與分數一致 ────────────────

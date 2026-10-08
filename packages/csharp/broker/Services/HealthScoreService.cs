@@ -53,10 +53,13 @@ public class HealthScoreService
 
         // 取一次 container stats（一次 docker stats 呼叫、避免 per-worker 重複查）
         IReadOnlyList<ContainerStats>? stats = null;
+        IReadOnlyList<ManagedContainer>? managed = null;
         if (_containerMgr != null)
         {
             try { stats = await _containerMgr.GetStatsAsync(ct); }
             catch { /* container runtime 不在 → resource 分量會被略過 */ }
+            try { managed = await _containerMgr.ListManagedAsync(ct); }
+            catch { /* 拿不到受管清單 → 退回以容器名稱比對 */ }
         }
 
         // 過去 15 min 每個 capability 的執行成功/失敗計數（execution_requests 是 PEP 一定會寫的表）
@@ -68,7 +71,7 @@ public class HealthScoreService
         {
             var hb = ScoreHeartbeat(now - w.LastHeartbeat, _heartbeatTimeout);
             var dispatch = ScoreDispatch(SumForCapabilities(statsByCapability, w.Capabilities));
-            var resource = ScoreResource(stats, w.WorkerId);
+            var resource = ScoreResource(FindStatsForWorker(stats, managed, w.WorkerId));
 
             // 加權平均，跳過 null（沒資料的分量）
             var weighted = WeightedAvg(
@@ -163,13 +166,48 @@ public class HealthScoreService
         };
     }
 
-    private static ResourceScore? ScoreResource(IReadOnlyList<ContainerStats>? stats, string workerId)
+    /// <summary>
+    /// 找出某個 worker 對應的容器資源統計。
+    ///
+    /// 2026-10 改寫。原本用「容器名稱包含 workerId 第一個 '-' 之前那段」寬鬆比對,但 ContainerManager
+    /// 的容器名稱是 <c>b4a-{type}-{workerId 前 12 字}</c>:workerId 一長,那段就超過 12 字而永遠比對不到,
+    /// 反之若很短又會誤配到別的容器。現在依序:
+    ///   1. ContainerManager 受管清單裡 WorkerId 相同的那筆 → 以容器 ID 對到統計(docker stats 給短 ID、
+    ///      受管清單存完整 ID,所以用前綴相符比對)
+    ///   2. 退回比對容器名稱是否以 <c>-{workerId 前 12 字}</c> 結尾(與 ContainerManager 的命名規則一致)
+    /// 都對不到就回 null:這個分量不計,而不是拿別人的容器數字充數。
+    /// </summary>
+    public static ContainerStats? FindStatsForWorker(
+        IReadOnlyList<ContainerStats>? stats,
+        IReadOnlyList<ManagedContainer>? managed,
+        string workerId)
     {
-        if (stats == null) return null;
-        // worker_id 跟 container_name 不一定完全對應；用「container_name 包含 worker_id 第一段」做寬鬆匹配
-        var prefix = workerId.Split('-')[0];   // e.g. trading-wkr-xxx → "trading"
-        var s = stats.FirstOrDefault(x =>
-            (x.ContainerName ?? "").Contains(prefix, StringComparison.OrdinalIgnoreCase));
+        if (stats == null || stats.Count == 0 || string.IsNullOrEmpty(workerId)) return null;
+
+        var containerId = managed?.FirstOrDefault(m =>
+            string.Equals(m.WorkerId, workerId, StringComparison.Ordinal) &&
+            !string.IsNullOrEmpty(m.ContainerId))?.ContainerId;
+        if (!string.IsNullOrEmpty(containerId))
+        {
+            var byId = stats.FirstOrDefault(s => SameContainerId(s.ContainerId, containerId));
+            if (byId != null) return byId;
+        }
+
+        var suffix = "-" + workerId[..Math.Min(12, workerId.Length)];
+        return stats.FirstOrDefault(s =>
+            (s.ContainerName ?? "").TrimStart('/').EndsWith(suffix, StringComparison.Ordinal));
+    }
+
+    /// <summary>短 ID(12 字)與完整 ID(64 字)視為同一個容器;太短的字串不算數,避免誤配。</summary>
+    private static bool SameContainerId(string? a, string? b)
+    {
+        if (string.IsNullOrEmpty(a) || string.IsNullOrEmpty(b)) return false;
+        if (Math.Min(a.Length, b.Length) < 12) return string.Equals(a, b, StringComparison.OrdinalIgnoreCase);
+        return a.StartsWith(b, StringComparison.OrdinalIgnoreCase) || b.StartsWith(a, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static ResourceScore? ScoreResource(ContainerStats? s)
+    {
         if (s == null) return null;
         var avg = (s.CpuPercent + s.MemoryPercent) / 2.0;
         int score; string label;

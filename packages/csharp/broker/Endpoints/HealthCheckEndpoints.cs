@@ -1,4 +1,5 @@
 using Broker.Helpers;
+using BrokerCore.Services;
 using FunctionPool.Models;
 using FunctionPool.Registry;
 using System.Diagnostics;
@@ -51,6 +52,41 @@ public static class HealthCheckEndpoints
                     active_tasks = w.ActiveTasks,
                     max_concurrent = w.MaxConcurrent,
                 }),
+            }));
+        });
+
+        // GET /api/v1/health/llm — LLM 代理呼叫統計(呼叫數、成功率、延遲、各模型、趨勢)
+        //
+        // 2026-10 新增。MeteredLlmProxyService 從一開始就在記錄每次 LLM 呼叫,但沒有任何端點讀它,
+        // 收集到的數字等於沒有人看得到。這裡只回彙總與趨勢,刻意不回 Recent()(單次呼叫明細含截短的
+        // 工具參數,可能帶到使用者內容)。與本群組其他端點一樣只限管理員。
+        hc.MapGet("/llm", (HttpContext ctx, LlmProxyMetrics metrics) =>
+        {
+            var bucketMinutes = int.TryParse(ctx.Request.Query["bucket_minutes"].ToString(), out var bm)
+                ? Math.Clamp(bm, 1, 60) : 10;
+            var bucketCount = int.TryParse(ctx.Request.Query["buckets"].ToString(), out var bc)
+                ? Math.Clamp(bc, 1, 144) : 24;
+            var s = metrics.Snapshot();
+            return Results.Ok(ApiResponseHelper.Success(new
+            {
+                started_at       = s.StartedAt,
+                total_calls      = s.TotalCalls,
+                success_calls    = s.SuccessCalls,
+                failure_calls    = s.FailureCalls,
+                success_rate_pct = s.SuccessRatePct,
+                avg_latency_ms   = s.AvgLatencyMs,
+                total_eval_tokens = s.TotalEvalTokens,
+                per_model = s.PerModel.Select(m => new
+                {
+                    model          = m.Model,
+                    calls          = m.Calls,
+                    success_calls  = m.SuccessCalls,
+                    eval_tokens    = m.EvalTokens,
+                    avg_latency_ms = m.AvgLatencyMs,
+                    last_call_at   = m.LastTs,
+                }),
+                bucket_minutes = bucketMinutes,
+                trend = metrics.Trend(bucketMinutes, bucketCount),
             }));
         });
 
