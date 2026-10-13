@@ -23,7 +23,6 @@ public static class NyaRoleAdminTests
         TestCreateUpdateDeleteRole();
         TestDeleteGuards();
         TestAssignCreatesPrincipalIdempotentAndRevoke();
-        TestGuestGateFollowsRoles();
         TestReviveSoftDeletedRole();
         Console.WriteLine($"\n=== Role Admin Test Results: {_passed} passed, {_failed} failed ===");
         return (_passed, _failed);
@@ -101,23 +100,6 @@ public static class NyaRoleAdminTests
 
             AssertTrue("revoke-ok", svc.RevokeRole("u_a", "role_reader"));
             AssertEqual("zero-after-revoke", 0, svc.GetUserRoles("u_a").Roles.Count);
-        });
-    }
-
-    private static void TestGuestGateFollowsRoles()
-    {
-        Console.WriteLine("--- guest gate: authorized only while holding an active role; revoke all → guest ---");
-        WithSvc((db, svc) =>
-        {
-            var gate = new BrokerPrincipalResolver(db, new NyaPrincipalBindingService(db, NullLogger<NyaPrincipalBindingService>.Instance));
-            AssertTrue("guest-before-assign", !gate.IsAuthorized("u_g", "line"));
-
-            svc.AssignRole("u_g", "role_reader", "tester");
-            AssertTrue("authorized-after-assign", gate.IsAuthorized("u_g", "line"));
-
-            svc.RevokeRole("u_g", "role_reader");
-            AssertTrue("principal-kept", svc.GetUserRoles("u_g").PrincipalId != null);
-            AssertTrue("guest-after-revoke-all", !gate.IsAuthorized("u_g", "line"));
         });
     }
 

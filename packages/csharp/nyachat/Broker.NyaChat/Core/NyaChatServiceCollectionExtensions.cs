@@ -85,10 +85,6 @@ public static class NyaChatServiceCollectionExtensions
         // Nya 內建 fallback：一律允許。broker 在 Program.cs 以 BrokerToolAuthorizer 覆蓋（最後註冊者勝）。
         services.AddSingleton<INyaToolAuthorizer, AllowAllToolAuthorizer>();
 
-        // guest gate fallback（2026-07-08）：未接 broker 時一律放行（單元測試 / 非 broker 宿主行為不變）。
-        // broker 在 Program.cs 以 BrokerPrincipalResolver 覆蓋；TryAdd 讓測試可先註冊 fake。
-        services.TryAddSingleton<INyaPrincipalResolver, AllowAllPrincipalResolver>();
-
         // 對外唯一對話入口介面綁定。停用時綁 Null 物件，
         // 使 broker 在 NyaChat 停用或缺件時仍能啟動，消費端可走既有 fallback。
         if (config.Enabled)
@@ -119,10 +115,4 @@ public static class NyaChatServiceCollectionExtensions
         services.AddSingleton<INyaLlmProvider, T>();
         return services;
     }
-}
-
-/// <summary>guest gate 的 Nya 內建 fallback：一律視為正式使用者。</summary>
-internal sealed class AllowAllPrincipalResolver : INyaPrincipalResolver
-{
-    public bool IsAuthorized(string userId, string channelType) => true;
 }

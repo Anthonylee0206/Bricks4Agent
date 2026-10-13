@@ -41,7 +41,6 @@ public class NyaChatOrchestrator : Abstractions.INyaChatOrchestrator
     private readonly NyaToolRegistry _toolRegistry;
     private readonly NyaTokenEstimator _tokenEstimator;
     private readonly Abstractions.INyaPreChatCommandHandler _preChatCommand;
-    private readonly Abstractions.INyaPrincipalResolver _principalResolver;
     private readonly ILogger<NyaChatOrchestrator> _logger;
 
     // 大項七 Fix B：per-user 背景摘要進行中旗標，避免同一使用者並發跑多個摘要任務
@@ -62,7 +61,6 @@ public class NyaChatOrchestrator : Abstractions.INyaChatOrchestrator
         NyaToolRegistry toolRegistry,
         NyaTokenEstimator tokenEstimator,
         Abstractions.INyaPreChatCommandHandler preChatCommand,
-        Abstractions.INyaPrincipalResolver principalResolver,
         ILogger<NyaChatOrchestrator> logger)
     {
         _configStore = configStore;
@@ -76,7 +74,6 @@ public class NyaChatOrchestrator : Abstractions.INyaChatOrchestrator
         _toolRegistry = toolRegistry;
         _tokenEstimator = tokenEstimator;
         _preChatCommand = preChatCommand;
-        _principalResolver = principalResolver;
         _logger = logger;
     }
 
@@ -114,35 +111,6 @@ public class NyaChatOrchestrator : Abstractions.INyaChatOrchestrator
     {
         if (string.IsNullOrWhiteSpace(userId) || string.IsNullOrWhiteSpace(message))
             return ErrorResult("使用者識別與訊息內容不可為空。", "empty_input");
-
-        // ── 0. Guest gate（2026-07-08）：無 principal 綁定 → 靜默記錄，不進 LLM、不回覆 ──
-        // fail-closed：resolver 例外視為 guest（授權查不到就不放行）。
-        bool authorized;
-        try { authorized = _principalResolver.IsAuthorized(userId, channelType); }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "[NyaChat] principal resolve failed for {User}; treating as guest",
-                userId[..Math.Min(8, userId.Length)]);
-            authorized = false;
-        }
-        if (!authorized)
-        {
-            try
-            {
-                var guestTopic = !string.IsNullOrWhiteSpace(conversationId)
-                    ? conversationId!
-                    : _memoryService.GetOrCreateActiveTopic(userId);
-                _memoryService.AppendMessage(userId, "user", message, guestTopic);
-                _auditLogger.LogGuestBlocked(userId, channelType);
-                return new NyaChatResult { Replies = new List<string>(), TopicId = guestTopic, HistoryCount = 0 };
-            }
-            catch (Exception ex)
-            {
-                // 記錄失敗也維持靜默——不能因落地失敗而放行或回錯誤訊息給陌生人。
-                _logger.LogError(ex, "[NyaChat] guest logging failed for {User}", userId[..Math.Min(8, userId.Length)]);
-                return new NyaChatResult { Replies = new List<string>(), HistoryCount = 0 };
-            }
-        }
 
         var sw = Stopwatch.StartNew();
 

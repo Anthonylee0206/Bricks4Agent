@@ -173,16 +173,7 @@ public class WebhookReceiver : IDisposable
             var replyToken = evt.TryGetProperty("replyToken", out var rt) ? rt.GetString() : null;
 
             var source = evt.GetProperty("source");
-            var senderUserId = source.TryGetProperty("userId", out var sender) ? sender.GetString() ?? "" : "";
-            // 群組視為單一 user（記憶共通）：group:{groupId} / room:{roomId}；個人維持原 userId 不加前綴
-            //（NyaUserIdentity 遷移硬約束：line 個人 id 必須原樣）。
-            var sourceType = source.TryGetProperty("type", out var st) ? st.GetString() ?? "user" : "user";
-            var userId = sourceType switch
-            {
-                "group" => "group:" + (source.TryGetProperty("groupId", out var gid) ? gid.GetString() ?? "" : ""),
-                "room"  => "room:"  + (source.TryGetProperty("roomId",  out var rid) ? rid.GetString() ?? "" : ""),
-                _       => source.TryGetProperty("userId", out var uid) ? uid.GetString() ?? "" : ""
-            };
+            var userId = source.TryGetProperty("userId", out var uid) ? uid.GetString() ?? "" : "";
 
             var timestamp = evt.TryGetProperty("timestamp", out var ts) ? ts.GetInt64() : 0;
 
@@ -194,7 +185,6 @@ public class WebhookReceiver : IDisposable
                     {
                         MessageId = messageId,
                         UserId = userId,
-                        SenderUserId = senderUserId,
                         Type = InboundMessageType.Text,
                         Text = text,
                         ReplyToken = replyToken,
@@ -210,7 +200,6 @@ public class WebhookReceiver : IDisposable
                     {
                         MessageId = messageId,
                         UserId = userId,
-                        SenderUserId = senderUserId,
                         Type = InboundMessageType.Audio,
                         AudioFilePath = audioPath,
                         ReplyToken = replyToken,
@@ -224,7 +213,6 @@ public class WebhookReceiver : IDisposable
                     {
                         MessageId = messageId,
                         UserId = userId,
-                        SenderUserId = senderUserId,
                         Type = InboundMessageType.Other,
                         Text = $"[{messageType} message, id={messageId}]",
                         ReplyToken = replyToken,
@@ -283,7 +271,6 @@ public class InboundMessage
 {
     public string MessageId { get; set; } = "";
     public string UserId { get; set; } = "";
-    public string SenderUserId { get; set; } = "";
     public InboundMessageType Type { get; set; }
     public string? Text { get; set; }
     public string? AudioFilePath { get; set; }

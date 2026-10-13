@@ -140,10 +140,6 @@ public class NyaAuditLogger
     public void LogTopicRename(string userId, string topicId, string title)
         => Write(userId, "topic_rename", new { topic_id = topicId, title });
 
-    /// <summary>guest（無有效身分組）來訊：已落地但不回覆（guest gate，2026-07-08）。</summary>
-    public void LogGuestBlocked(string userId, string channelType)
-        => Write(userId, "guest_message_blocked", new { channel_type = channelType });
-
     /// <summary>身分組指派／撤銷（管理端動作）。記在該使用者名下，其稽核分頁可查。action: role_assign | role_revoke。</summary>
     public void LogRoleChange(string userId, string action, string roleId)
         => Write(userId, action, new { role_id = roleId });

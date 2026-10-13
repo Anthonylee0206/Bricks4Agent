@@ -454,7 +454,7 @@ failed += raFailed;
 
 Console.WriteLine();
 
-var (ggPassed, ggFailed) = Broker.Tests.NyaGuestGateTests.Run();
+var (ggPassed, ggFailed) = Broker.Tests.NyaConversationTopicTests.Run();
 passed += ggPassed;
 failed += ggFailed;
 

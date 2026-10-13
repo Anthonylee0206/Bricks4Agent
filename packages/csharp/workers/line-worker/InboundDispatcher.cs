@@ -123,10 +123,11 @@ public class InboundDispatcher
 
     private async Task ProcessMessage(InboundMessage message, CancellationToken ct)
     {
-        // guest gate（2026-07-08）：白名單語意改為「可下指令 / 核准的人」。
-        // 聊天訊息一律轉發，由 broker/NyaChat 依身分組決定回不回（無綁定 = guest = 靜默記錄）。
-        var canCommand = _allowedUserIds.Count == 0 ||
-            (!string.IsNullOrEmpty(message.SenderUserId) && _allowedUserIds.Contains(message.SenderUserId));
+        if (_allowedUserIds.Count > 0 && !_allowedUserIds.Contains(message.UserId))
+        {
+            _logger.LogWarning("Ignoring message from non-whitelisted user {UserId}", message.UserId);
+            return;
+        }
 
         var text = message.Type switch
         {
@@ -141,17 +142,14 @@ public class InboundDispatcher
         }
 
         var trimmed = text.Trim().ToLowerInvariant();
-        if (canCommand && TryHandleApproval(trimmed, message))
+        if (TryHandleApproval(trimmed, message))
         {
             return;
         }
 
         if (text.Trim().StartsWith("/"))
         {
-            if (canCommand)
-                await HandleCommand(text.Trim(), message, ct);
-            else
-                _logger.LogWarning("Ignoring command from non-whitelisted source {UserId}", message.UserId);
+            await HandleCommand(text.Trim(), message, ct);
             return;
         }
 
@@ -180,12 +178,6 @@ public class InboundDispatcher
             }
 
             using var doc = JsonDocument.Parse(responseBody);
-            var result = doc.RootElement.TryGetProperty("data", out var resultData) &&
-                resultData.ValueKind == JsonValueKind.Object
-                ? resultData
-                : doc.RootElement;
-            var hasBrokerError = result.TryGetProperty("error", out var brokerError) &&
-                brokerError.ValueKind != JsonValueKind.Null;
             string? reply = null;
             var followUpMessages = new List<string>();
             if (doc.RootElement.TryGetProperty("data", out var data) &&
@@ -213,14 +205,6 @@ public class InboundDispatcher
 
             if (string.IsNullOrWhiteSpace(reply))
             {
-                if (followUpMessages.Count == 0 && !hasBrokerError)
-                {
-                    _logger.LogDebug(
-                        "Broker returned no reply or follow-up messages for {User}; staying silent",
-                        userId[..Math.Min(8, userId.Length)]);
-                    return;
-                }
-
                 reply = "系統目前沒有產生可回覆內容，請稍後再試。";
             }
 
@@ -392,7 +376,7 @@ public class InboundDispatcher
             target.Result = new ApprovalResult
             {
                 Approved = isApproved.Value,
-                RespondedBy = message.SenderUserId,
+                RespondedBy = message.UserId,
                 RespondedAt = DateTime.UtcNow
             };
 

@@ -79,7 +79,7 @@ function PageC({ userId, onNavigate }) {
         {tab === 'facts'     && <TabC4 userId={userId} onChanged={loadOverview} />}
         {tab === 'summaries' && <TabC5 userId={userId} onChanged={loadOverview} />}
         {tab === 'audit'     && <TabC6 userId={userId} />}
-        {tab === 'roles'     && <NyaUserRolesTab userId={userId} />}
+        {/* 身分組分頁（PageH 的 NyaUserRolesTab）已交還 broker 權限後台（2026-10-14），不再引用。 */}
       </div>
     </div>
   );

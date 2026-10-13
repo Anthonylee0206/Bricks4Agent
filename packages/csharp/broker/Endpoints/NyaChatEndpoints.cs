@@ -18,15 +18,48 @@ public static class NyaChatEndpoints
     {
         var nya = group.MapGroup("/local-admin/nya")
             .WithBrokerAuthPolicy(BrokerAuthPolicy.LocalAdminSession);
-
-        static string[] ReadStrArr(System.Text.Json.JsonElement body, string prop)
+        nya.AddEndpointFilter(async (filterContext, next) =>
         {
-            if (!body.TryGetProperty(prop, out var el) || el.ValueKind != System.Text.Json.JsonValueKind.Array)
-                return Array.Empty<string>();
-            return el.EnumerateArray()
-                .Where(e => e.ValueKind == System.Text.Json.JsonValueKind.String)
-                .Select(e => e.GetString()!).ToArray();
-        }
+            var ctx = filterContext.HttpContext;
+            var path = ctx.Request.Path.Value ?? string.Empty;
+            const string marker = "/local-admin/nya";
+            var index = path.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+            if (index < 0 || !TryResolveRouteAuthorization(
+                    ctx.Request.Method,
+                    path[(index + marker.Length)..],
+                    out var permissions,
+                    out var superAdminOnly))
+            {
+                return Results.Json(
+                    ApiResponseHelper.Error("Forbidden: unknown NyaChat admin route.", 403),
+                    statusCode: StatusCodes.Status403Forbidden);
+            }
+
+            var auth = ctx.RequestServices.GetRequiredService<LocalAdminAuthService>();
+            if (superAdminOnly)
+            {
+                if (!auth.TryRequireAuthenticated(ctx, out var session, out var denied))
+                    return denied;
+
+                if (!string.Equals(LocalAdminRoles.Normalize(session.Role), LocalAdminRoles.SuperAdmin, StringComparison.Ordinal))
+                {
+                    return Results.Json(
+                        ApiResponseHelper.Error("Forbidden: super_admin role required.", 403),
+                        statusCode: StatusCodes.Status403Forbidden);
+                }
+            }
+            else if (permissions.Length == 1)
+            {
+                if (!auth.TryRequirePermission(ctx, permissions[0], out _, out var denied))
+                    return denied;
+            }
+            else if (!auth.TryRequireAnyPermission(ctx, permissions, out _, out var denied))
+            {
+                return denied;
+            }
+
+            return await next(filterContext);
+        });
 
         // 與 GET 端點相同的空值處理（空白 = 未篩選），確保刪除範圍與列表一致。
         static string? QueryOrNull(HttpContext ctx, string key)
@@ -253,8 +286,7 @@ public static class NyaChatEndpoints
         nya.MapGet("/users", (
             HttpContext ctx,
             LocalAdminAuthService auth,
-            NyaMemoryService memoryService,
-            Broker.Services.NyaTools.NyaRoleAdminService roleAdmin) =>
+            NyaMemoryService memoryService) =>
         {
             if (!auth.TryRequireAuthenticated(ctx, out _, out var denied))
                 return denied;
@@ -278,10 +310,7 @@ public static class NyaChatEndpoints
                     message_count     = u.MsgCount,
                     active_fact_count = u.ActiveFactCount,
                     last_message_at   = u.LastAt,
-                    soul_id           = u.SoulId,
-                    // guest gate（2026-07-08）：空陣列 = 無綁定 = guest
-                    // ponytail: 每頁 ≤200 筆的 N+1 查詢，量大再改批次 join
-                    roles             = roleAdmin.GetUserRoles(u.UserId).Roles.Select(r => r.DisplayName).ToArray()
+                    soul_id           = u.SoulId
                 })
             }));
         });
@@ -291,7 +320,6 @@ public static class NyaChatEndpoints
             HttpContext ctx,
             LocalAdminAuthService auth,
             NyaMemoryService memoryService,
-            Broker.Services.NyaTools.NyaRoleAdminService roleAdmin,
             string userId) =>
         {
             if (!auth.TryRequireAuthenticated(ctx, out _, out var denied))
@@ -327,8 +355,7 @@ public static class NyaChatEndpoints
                     latest_covered_to_seq = ov.Summaries.LatestCoveredToSeq
                 },
                 last_message_at      = ov.LastMessageAt,
-                last_fact_updated_at = ov.LastFactUpdatedAt,
-                roles                = roleAdmin.GetUserRoles(userId).Roles.Select(r => r.DisplayName).ToArray()
+                last_fact_updated_at = ov.LastFactUpdatedAt
             }));
         });
 
@@ -1456,6 +1483,81 @@ public static class NyaChatEndpoints
             auditLogger.LogLlmRouteSet(callSiteId, profileId);
             return Results.Ok(ApiResponseHelper.Success(new { call_site_id = callSiteId, profile_id = profileId }));
         });
+
+    }
+
+    internal static bool TryResolveRouteAuthorization(
+        string method,
+        string path,
+        out string[] permissions,
+        out bool superAdminOnly)
+    {
+        permissions = Array.Empty<string>();
+        superAdminOnly = false;
+        if (!path.StartsWith("/", StringComparison.Ordinal))
+            return false;
+
+        var segments = path[1..].TrimEnd('/').ToLowerInvariant().Split('/');
+        if (segments.Any(string.IsNullOrEmpty))
+            return false;
+
+        var verb = method.ToUpperInvariant();
+        var audit = segments is ["audit"] or ["audit", _] or ["users", _, "audit"];
+        var profiles = segments is ["llm", "profiles"] or ["llm", "profiles", _];
+        if ((verb == HttpMethods.Delete && audit) ||
+            ((verb is "POST" or "PUT" or "DELETE") && profiles) ||
+            (verb == HttpMethods.Put && segments is ["llm", "routes"]))
+        {
+            superAdminOnly = true;
+            return true;
+        }
+
+        if (verb == HttpMethods.Get)
+        {
+            if (segments is ["audit"] or ["users", _, "audit"])
+                permissions = new[] { LocalAdminPermissions.AuditRead };
+            else if (segments is ["users"] or
+                     ["users", _, "overview" or "messages" or "topics" or "facts" or "summaries"] or
+                     ["users", _, "messages", _] or
+                     ["users", _, "facts", _, "history"])
+                permissions = new[] { LocalAdminPermissions.PermissionUserManage, LocalAdminPermissions.AuditRead };
+            else if (segments is ["status" or "config" or "prompts" or "tools" or "souls"] or ["souls", _])
+                permissions = new[] { LocalAdminPermissions.SystemStatusRead, LocalAdminPermissions.AuditRead };
+            else if (segments is ["llm", "param-catalog" or "templates" or "call-sites" or "profiles" or "routes"])
+                permissions = new[] { LocalAdminPermissions.SystemStatusRead };
+        }
+        else if ((verb == HttpMethods.Put && segments is ["config"] or ["souls", _]) ||
+                 (verb == HttpMethods.Post && segments is ["prompts", "reload"] or ["tools", _, "toggle"] or ["souls"] or ["souls", "reload"]) ||
+                 (verb == HttpMethods.Delete && segments is ["souls", _]))
+        {
+            permissions = new[] { LocalAdminPermissions.SystemWorkerManage };
+        }
+        else if ((verb == HttpMethods.Delete && segments is ["users", _]) ||
+                 ((verb is "POST" or "PUT" or "DELETE") && segments is
+                     ["users", _, "facts" or "messages" or "topics" or "summaries" or "soul"] or
+                     ["users", _, "facts" or "messages" or "topics", _] or
+                     ["users", _, "facts", _, "rollback"] or
+                     ["users", _, "topics", _, "switch" or "rename"] or
+                     ["users", _, "summaries", "trigger"] or
+                     ["users", _, "summaries", _, "rollback"]))
+        {
+            permissions = new[] { LocalAdminPermissions.PermissionUserManage };
+        }
+
+        return permissions.Length > 0;
+    }
+
+    // 角色管理已交還 broker 操作員與 LINE 權限後台（2026-10-14）；保留程式但不載入。
+    private static void MapRoleAdmin(RouteGroupBuilder nya)
+    {
+        static string[] ReadStrArr(System.Text.Json.JsonElement body, string prop)
+        {
+            if (!body.TryGetProperty(prop, out var el) || el.ValueKind != System.Text.Json.JsonValueKind.Array)
+                return Array.Empty<string>();
+            return el.EnumerateArray()
+                .Where(e => e.ValueKind == System.Text.Json.JsonValueKind.String)
+                .Select(e => e.GetString()!).ToArray();
+        }
 
         // ── 身分組（roles / capabilities / user-roles，items 1–2）──────────────────
         nya.MapGet("/roles", (HttpContext ctx, LocalAdminAuthService auth, Broker.Services.NyaTools.NyaRoleAdminService roles) =>

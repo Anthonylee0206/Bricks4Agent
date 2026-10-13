@@ -577,8 +577,7 @@ public class HighLevelCoordinator
                 new NyaAbstractions.NyaChatRequest { ChannelType = channel, ChannelUserId = userId, Message = chatInput },
                 cancellationToken);
 
-            var nyaFirst = nyaResult.Replies.FirstOrDefault() ?? "";
-            var nyaReply = string.IsNullOrWhiteSpace(nyaFirst) ? "" : PrepareReplySafe(profile, trimmed, nyaFirst);
+            var nyaReply = PrepareReplySafe(profile, trimmed, nyaResult.Replies.FirstOrDefault() ?? "");
             SaveUserProfile(channel, userId, profile);
             return FinalizeResult(channel, userId, envelope, trustedParse, workflow, new HighLevelProcessResult
             {
@@ -586,7 +585,7 @@ public class HighLevelCoordinator
                 Reply           = nyaReply,
                 FollowUpMessages = nyaResult.Replies.Count > 1 ? nyaResult.Replies.Skip(1).ToList() : null,
                 Error           = nyaResult.Error,
-                DecisionReason  = "nya_chat_v2",
+                DecisionReason  = decision.Reason,
                 HistoryCount    = nyaResult.HistoryCount
             });
         }

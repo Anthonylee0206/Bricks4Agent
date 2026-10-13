@@ -566,10 +566,7 @@ builder.Services.AddSingleton<Broker.NyaChat.INyaSecretProtector, Broker.Service
 var nyaChatConfig = builder.Configuration.GetSection("NyaChat")
     .Get<Broker.NyaChat.NyaChatConfig>()
     ?? new Broker.NyaChat.NyaChatConfig();
-builder.Services.AddSingleton<Broker.NyaChat.Abstractions.INyaPrincipalResolver, Broker.Services.NyaTools.BrokerPrincipalResolver>();
 builder.Services.AddNyaChat(nyaChatConfig);
-builder.Services.AddSingleton<Broker.Services.NyaTools.NyaPrincipalBindingService>();
-builder.Services.AddSingleton<Broker.Services.NyaTools.NyaRoleAdminService>();
 builder.Services.AddSingleton<Broker.NyaChat.Abstractions.INyaToolAuthorizer, Broker.Services.NyaTools.BrokerTierToolAuthorizer>();
 builder.Services.AddNyaTool<Broker.Services.NyaTools.SearchToolPlugin>();
 builder.Services.AddNyaTool<Broker.Services.NyaTools.TransportToolPlugin>();
@@ -643,13 +640,6 @@ var app = builder.Build();
 
 app.Logger.LogInformation("Broker database path: {DbPath}", dbPath);
 
-var nyaDemoSeed = app.Configuration.GetSection("NyaDemoSeed").Get<Broker.Services.NyaTools.NyaDemoSeedOptions>();
-if (nyaDemoSeed?.Enabled == true)
-    Broker.Services.NyaTools.NyaDemoSeeder.Seed(
-        app.Services.GetRequiredService<BrokerDb>(),
-        app.Services.GetRequiredService<Broker.Services.NyaTools.NyaPrincipalBindingService>(),
-        nyaDemoSeed,
-        app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("NyaDemoSeed"));
 
 app.Use(async (context, next) =>
 {

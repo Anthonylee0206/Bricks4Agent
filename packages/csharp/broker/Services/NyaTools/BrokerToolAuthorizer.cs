@@ -76,7 +76,7 @@ public sealed class BrokerToolAuthorizer : INyaToolAuthorizer
 
     /// <summary>
     /// 使用者目前的有效角色：Nya 綁定 → Principal Active → Active 且未過期（expires_at NULL = 永久）的
-    /// role_bindings → Active 的 roles。工具判權與 guest gate（<see cref="BrokerPrincipalResolver"/>）共用。
+    /// role_bindings → Active 的 roles。工具判權用。
     /// </summary>
     internal static List<Role> ActiveRoles(BrokerDb db, NyaPrincipalBindingService bindings, string userId, string channelType)
     {
