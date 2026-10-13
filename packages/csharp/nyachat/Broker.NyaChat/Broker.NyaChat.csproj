@@ -1,0 +1,68 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>Broker.NyaChat</RootNamespace>
+
+    <Version>1.0.0</Version>
+    <Description>NyaChat 實作 — 工具調用 / 個性化回覆 / 對話紀錄與記憶管理。依賴 Abstractions + BrokerCore + BaseOrm。</Description>
+    <Authors>Bricks4Agent</Authors>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 純契約：對外唯一暴露面 -->
+    <ProjectReference Include="..\Broker.NyaChat.Abstractions\Broker.NyaChat.Abstractions.csproj" />
+    <!-- BrokerDb：NyaMemoryService / NyaAuditLogger 的文件導向儲存（BrokerCore 不依賴 broker → 無循環） -->
+    <ProjectReference Include="..\..\broker-core\BrokerCore.csproj" />
+    <!-- BaseOrm：nya_messages / nya_facts / nya_summaries / nya_topics 的 [Table] 映射 -->
+    <ProjectReference Include="..\..\database\BaseOrm\net10\BaseOrm.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      classlib 需顯式取得 ASP.NET Core 共享框架，方能使用 ILogger<>/IConfiguration/
+      IHttpClientFactory/IServiceCollection 等擴充（broker 是 Web SDK 隱含取得，搬出後必須補上）。
+    -->
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      還原 Web SDK 隱含 global using：原檔在 broker（Web SDK）中依賴這些隱含 using
+      取得 ILogger<> / IConfiguration / IServiceCollection，搬到一般 classlib 後需顯式補回，
+      以維持原始碼零改動（不必逐檔加 using）。
+    -->
+    <Using Include="Microsoft.Extensions.Configuration" />
+    <Using Include="Microsoft.Extensions.DependencyInjection" />
+    <Using Include="Microsoft.Extensions.Logging" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      Soul 人格定義 JSON：以 Content + PreserveNewest 複製，透過 ProjectReference 傳遞到 broker 輸出 bin。
+      Link 維持 souls\ 相對路徑，使 NyaSoulProvider 的 SoulsDirectory="souls" 在執行期可解析。
+      （classlib 預設將 .json 收為 None，故先 Remove 再以 Content 加入，避免重複項。）
+    -->
+    <None Remove="Soul\souls\**\*.json" />
+    <Content Include="Soul\souls\**\*.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <Link>souls\%(Filename)%(Extension)</Link>
+    </Content>
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      Prompt 模板 JSON：以 Content + PreserveNewest 複製，透過 ProjectReference 傳遞到 broker 輸出 bin。
+      Link 維持 prompts\ 相對路徑，使 NyaPromptTemplateProvider 的 PromptsDirectory="prompts" 在執行期可解析。
+      （classlib 預設將 .json 收為 None，故先 Remove 再以 Content 加入，避免重複項。）
+    -->
+    <None Remove="Prompt\prompts\**\*.json" />
+    <Content Include="Prompt\prompts\**\*.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <Link>prompts\%(Filename)%(Extension)</Link>
+    </Content>
+  </ItemGroup>
+
+</Project>

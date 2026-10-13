@@ -32,13 +32,20 @@ public class LineApiClient : ILineApiClient, IDisposable
 
     // ─── 發送訊息 ───
 
+    // guest gate（2026-07-08）：轉發身分的 group:/room: 前綴僅供 NyaChat 記憶命名空間；
+    // LINE push API 的 to 需要原始 groupId/roomId。集中在此剝除，免改每個呼叫點。
+    private static string ToLineRecipient(string id)
+        => id.StartsWith("group:") ? id["group:".Length..]
+         : id.StartsWith("room:")  ? id["room:".Length..]
+         : id;
+
     /// <summary>Push 文字訊息給指定使用者</summary>
     public async Task<(bool Success, string? Error)> PushTextMessageAsync(
         string recipientId, string text, CancellationToken ct = default)
     {
         var body = new
         {
-            to = recipientId,
+            to = ToLineRecipient(recipientId),
             messages = new[]
             {
                 new { type = "text", text }
@@ -54,7 +61,7 @@ public class LineApiClient : ILineApiClient, IDisposable
     {
         var body = new
         {
-            to = recipientId,
+            to = ToLineRecipient(recipientId),
             messages
         };
 

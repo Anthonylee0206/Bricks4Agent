@@ -44,31 +44,41 @@ public sealed class HighLevelQueryToolMediator
         }
 
         var googleResult = await SearchWebWithToolAsync(GoogleToolId, query);
-        if (googleResult.Success)
+        // #1 修復：Google 以 gbv=1 抓取常回 HTTP 200 但「零可解析結果」（Success=true、Results 空），
+        // 舊邏輯只在 Google「硬失敗」時才退 DuckDuckGo，導致零結果時直接回罐頭文字、永不退 DDG。
+        // 改為「成功且有結果」才直接採用，否則（失敗 or 零結果）一律退到 DuckDuckGo。
+        if (googleResult.Success && googleResult.Results.Count > 0)
             return googleResult;
 
         _logger.LogWarning(
-            "High-level Google web search failed with {Error}; falling back to DuckDuckGo.",
-            googleResult.Error ?? "unknown_error");
+            "High-level Google web search yielded {State}; falling back to DuckDuckGo.",
+            googleResult.Success ? "no parseable results" : (googleResult.Error ?? "unknown_error"));
 
         var fallbackResult = await SearchWebWithToolAsync(DuckDuckGoToolId, query);
-        if (!fallbackResult.Success)
+
+        if (fallbackResult.Success && fallbackResult.Results.Count > 0)
         {
-            return HighLevelQueryToolResult.Fail(
-                !string.IsNullOrWhiteSpace(googleResult.Error)
-                    ? $"網路搜尋失敗：{googleResult.Error}"
-                    : "網路搜尋失敗，請稍後再試。",
-                googleResult.Error ?? "tool_spec_unavailable");
+            if (!string.IsNullOrWhiteSpace(googleResult.Error))
+            {
+                fallbackResult.Reply = string.Join('\n', new[]
+                {
+                    "Google 搜尋暫時失敗，已改用 DuckDuckGo。",
+                    string.Empty,
+                    fallbackResult.Reply
+                });
+            }
+            return fallbackResult;
         }
 
-        if (!string.IsNullOrWhiteSpace(googleResult.Error))
+        // 兩者皆無可用結果：任一為硬失敗 → 回報失敗錯誤碼；
+        // 否則兩者皆「成功但零結果」→ 回傳零結果（Success=true、Results 空），
+        // 交由上層 SearchToolPlugin.Map 轉成 search_no_results 錯誤碼（#2），避免 LLM 沿用罐頭文字。
+        if (!googleResult.Success || !fallbackResult.Success)
         {
-            fallbackResult.Reply = string.Join('\n', new[]
-            {
-                "Google 搜尋暫時失敗，已改用 DuckDuckGo。",
-                string.Empty,
-                fallbackResult.Reply
-            });
+            var err = !string.IsNullOrWhiteSpace(googleResult.Error) ? googleResult.Error
+                    : !string.IsNullOrWhiteSpace(fallbackResult.Error) ? fallbackResult.Error
+                    : "tool_dispatch_failed";
+            return HighLevelQueryToolResult.Fail($"網路搜尋失敗：{err}", err!);
         }
 
         return fallbackResult;

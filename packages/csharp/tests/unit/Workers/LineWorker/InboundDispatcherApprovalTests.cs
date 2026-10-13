@@ -42,7 +42,7 @@ public class InboundDispatcherApprovalTests
     {
         var dispatcher = CreateDispatcher();
         dispatcher.RegisterApproval("approval-1", "req-1", "Need approval");
-        var inbound = new InboundMessage { UserId = "user-2", Text = "y" };
+        var inbound = new InboundMessage { UserId = "user-2", SenderUserId = "user-2", Text = "y" };
 
         var consumed = (bool)TryHandleApprovalMethod.Invoke(dispatcher, new object[] { "y", inbound })!;
         var result = dispatcher.GetApprovalResult("approval-1");

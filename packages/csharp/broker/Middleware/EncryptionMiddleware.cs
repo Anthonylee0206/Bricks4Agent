@@ -72,9 +72,8 @@ public class EncryptionMiddleware
     {
         var path = context.Request.Path.Value ?? "";
 
-        // 排除不需加密的端點（方法比對不分大小寫，與 BodySizeLimit、BrokerAuth 一致）
-        if (!HttpMethods.IsPost(context.Request.Method)
-            || ExcludedPaths.Contains(path)
+        // 排除不需加密的端點
+        if (ExcludedPaths.Contains(path)
             || BrokerAuthPolicyResolver.Resolve(context) == BrokerAuthPolicy.Public
             || path.StartsWith("/dev/", StringComparison.OrdinalIgnoreCase))
         {
@@ -82,16 +81,26 @@ public class EncryptionMiddleware
             return;
         }
 
+        // 信任路徑（local-admin / tool-specs / line）：POST / PUT / PATCH 都讀明文 body
         if (IsPlainJsonTrustedPath(path))
         {
-            context.Request.EnableBuffering();
-            using (var plainReader = new StreamReader(context.Request.Body, Encoding.UTF8, leaveOpen: true))
+            if (HttpMethods.IsPost(context.Request.Method) || HttpMethods.IsPut(context.Request.Method) || HttpMethods.IsPatch(context.Request.Method))
             {
-                var plainBody = await plainReader.ReadToEndAsync();
-                context.Items[DecryptedBodyKey] = string.IsNullOrWhiteSpace(plainBody) ? "{}" : plainBody;
+                context.Request.EnableBuffering();
+                using (var plainReader = new StreamReader(context.Request.Body, Encoding.UTF8, leaveOpen: true))
+                {
+                    var plainBody = await plainReader.ReadToEndAsync();
+                    context.Items[DecryptedBodyKey] = string.IsNullOrWhiteSpace(plainBody) ? "{}" : plainBody;
+                }
+                context.Request.Body.Position = 0;
             }
+            await _next(context);
+            return;
+        }
 
-            context.Request.Body.Position = 0;
+        // 非信任路徑只對 POST 做加解密
+        if (!HttpMethods.IsPost(context.Request.Method))
+        {
             await _next(context);
             return;
         }

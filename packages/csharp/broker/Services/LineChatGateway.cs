@@ -424,6 +424,19 @@ public class LineChatGateway
             }
         };
 
+        if (_highLevelLlmOptions.DefaultModel == "qwen3.6:35b-a3b-Q4")
+        {
+            request["options"] = new JsonObject
+            {
+                ["min_p"] = 0,
+                ["presence_penalty"] = 1.5,
+                ["repeat_penalty"] = 1,
+                ["temperature"] = 1,
+                ["top_k"] = 20,
+                ["top_p"] = 0.95
+            };
+        }
+
         using var content = new StringContent(request.ToJsonString(), Encoding.UTF8, "application/json");
         using var response = await _httpClient.PostAsync("api/chat", content, ct);
         if (!response.IsSuccessStatusCode)
@@ -448,6 +461,17 @@ public class LineChatGateway
             ["messages"] = messages,
             ["stream"] = false
         };
+
+        if (_highLevelLlmOptions.DefaultModel == "qwen3.6:35b-a3b-Q4")
+        {
+            request["min_p"] = 0;
+            request["presence_penalty"] = 1.5;
+            request["frequency_penalty"] = 1.0;
+            request["repeat_penalty"] = 1;
+            request["temperature"] = 1;
+            request["top_k"] = 20;
+            request["top_p"] = 0.95;
+        }
 
         using var content = new StringContent(request.ToJsonString(), Encoding.UTF8, "application/json");
         using var response = await _httpClient.PostAsync("v1/chat/completions", content, ct);
@@ -660,11 +684,16 @@ public class LineChatGatewayOptions
         "law",
         "legal"
     };
+    // public string SystemPrompt { get; set; } =
+    //     "你是一個透過 LINE 與使用者互動的高階智慧助理。請使用繁體中文，語氣簡潔清楚。"
+    //     + " 你的角色是對話、澄清需求、回答一般問題，並在適當時引導使用者使用明確前綴。"
+    //     + " 若問題需要受控網路搜尋，請建議使用 ?search 關鍵字。"
+    //     + " 若使用者要建立或修改交付物，請引導使用 / 開頭的任務指令。";
+
     public string SystemPrompt { get; set; } =
-        "你是一個透過 LINE 與使用者互動的高階智慧助理。請使用繁體中文，語氣簡潔清楚。"
-        + " 你的角色是對話、澄清需求、回答一般問題，並在適當時引導使用者使用明確前綴。"
-        + " 若問題需要受控網路搜尋，請建議使用 ?search 關鍵字。"
-        + " 若使用者要建立或修改交付物，請引導使用 / 開頭的任務指令。";
+        " 你是一個透過 LINE 與使用者互動的高階智慧助理NYA。請使用繁體中文，語氣清楚。"
+        + " 若問題需要即時網路搜尋，請建議使用者輸入 `?search 關鍵字`。"
+        + " 若使用者要建立、修改程式碼專案或執行複雜任務，請引導使用 `/任務名稱` 開頭的指令。";
 }
 
 public class ChatResult

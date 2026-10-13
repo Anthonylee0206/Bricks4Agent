@@ -2,6 +2,10 @@
   <Folder Name="/broker-core/">
     <Project Path="broker-core/BrokerCore.csproj" />
   </Folder>
+  <Folder Name="/nyachat/">
+    <Project Path="nyachat/Broker.NyaChat.Abstractions/Broker.NyaChat.Abstractions.csproj" />
+    <Project Path="nyachat/Broker.NyaChat/Broker.NyaChat.csproj" />
+  </Folder>
   <Folder Name="/broker/">
     <Project Path="broker/Broker.csproj" />
   </Folder>

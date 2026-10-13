@@ -1801,6 +1801,7 @@ try
             new FakePlanService(),
             new FakeTaskRouter(),
             lineGateway,
+            null,
             queryMediator,
             new HighLevelRelationQueryService(
                 queryMediator,
@@ -2062,6 +2063,7 @@ try
                 new FakePlanService(),
                 new FakeTaskRouter(),
                 lineGateway,
+                null,
                 queryMediator,
                 new HighLevelRelationQueryService(
                     queryMediator,

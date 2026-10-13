@@ -51,6 +51,8 @@ $googleOAuthClientFile = Get-ChildItem -Path @($secureSecretsRoot, $repoRoot) -F
 $brokerProductionOverridePath = Join-Path $brokerOut "appsettings.Production.json"
 $workerRuntimeConfigPath = Join-Path $workerOut "appsettings.json"
 $brokerRuntimeDbPath = Join-Path $dataRoot "broker.db"
+# NyaChat 專屬庫：放在持久化的 data\ 夾，避免落在每次重啟會被 Clear-PublishOutputDirectory 清空的 broker\ 發佈夾。
+$nyaChatRuntimeDbPath = Join-Path $dataRoot "nyachat.db"
 $ngrokConfigPath = Join-Path $env:LOCALAPPDATA "ngrok\ngrok.yml"
 $ngrokOutLog = Join-Path $logDir "ngrok.out.log"
 $ngrokErrLog = Join-Path $logDir "ngrok.err.log"
@@ -85,7 +87,8 @@ $env:PATH = "$dotnetRoot;$env:PATH"
 function Initialize-BrokerRuntimeDatabase {
     param(
         [string]$LegacyBrokerOutputPath,
-        [string]$RuntimeDbPath
+        [string]$RuntimeDbPath,
+        [string]$DbFileName = "broker.db"
     )
 
     $runtimeDir = Split-Path -Parent $RuntimeDbPath
@@ -95,7 +98,7 @@ function Initialize-BrokerRuntimeDatabase {
         return
     }
 
-    $legacyDbPath = Join-Path $LegacyBrokerOutputPath "broker.db"
+    $legacyDbPath = Join-Path $LegacyBrokerOutputPath $DbFileName
     if (-not (Test-Path $legacyDbPath)) {
         return
     }
@@ -684,6 +687,9 @@ Stop-RecordedProcess -PidFile $cloudflaredPidFile
 Stop-RecordedProcess -PidFile $localhostRunPidFile
 Stop-RecordedProcess -PidFile $webhookSyncPidFile
 Initialize-BrokerRuntimeDatabase -LegacyBrokerOutputPath $brokerOut -RuntimeDbPath $brokerRuntimeDbPath
+# 一次性保住既有 NyaChat 記憶/LLM profile：把舊版落在 broker\ 發佈夾的 nyachat.db 搬到持久化的 data\，
+# 之後永遠走 data\nyachat.db（見下方 productionOverrideMap 的 NyaChat:DbPath），不再受發佈夾清空影響。
+Initialize-BrokerRuntimeDatabase -LegacyBrokerOutputPath $brokerOut -RuntimeDbPath $nyaChatRuntimeDbPath -DbFileName "nyachat.db"
 
 if (-not $SkipBuild) {
     Clear-PublishOutputDirectory -Path $brokerOut -Label "broker"
@@ -789,6 +795,11 @@ $productionOverrideMap = @{
     # (like worker-auth.json) and write them here instead of allowing ephemeral keys.
     Broker = @{
         AllowEphemeralKeys = $true
+    }
+    # NyaChat 專屬庫指向持久化的 data\，與 broker.db 並排；否則預設相對路徑 "nyachat.db"
+    # 會落在每次重啟被清空的 broker\ 發佈夾，導致 Nya 記憶/LLM profile 重啟即消失。
+    NyaChat = @{
+        DbPath = $nyaChatRuntimeDbPath
     }
 }
 if (-not [string]::IsNullOrWhiteSpace($anthropicApiKey)) {

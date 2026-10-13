@@ -364,6 +364,108 @@ failed += bdFailed;
 
 Console.WriteLine();
 
+var (nyaPassed, nyaFailed) = Broker.Tests.NyaLlmTests.Run();
+passed += nyaPassed;
+failed += nyaFailed;
+
+Console.WriteLine();
+
+var (tbPassed, tbFailed) = Broker.Tests.NyaTokenBudgetTests.Run();
+passed += tbPassed;
+failed += tbFailed;
+
+Console.WriteLine();
+
+var (ptPassed, ptFailed) = Broker.Tests.NyaPromptTests.Run();
+passed += ptPassed;
+failed += ptFailed;
+
+Console.WriteLine();
+
+var (ccPassed, ccFailed) = Broker.Tests.NyaConcurrencyTests.Run();
+passed += ccPassed;
+failed += ccFailed;
+
+Console.WriteLine();
+
+var (tePassed, teFailed) = Broker.Tests.NyaToolExecutionTests.Run();
+passed += tePassed;
+failed += teFailed;
+
+Console.WriteLine();
+
+var (stPassed, stFailed) = Broker.Tests.NyaSearchToolTests.Run();
+passed += stPassed;
+failed += stFailed;
+
+Console.WriteLine();
+
+var (tpPassed, tpFailed) = Broker.Tests.NyaTopicTests.Run();
+passed += tpPassed;
+failed += tpFailed;
+
+Console.WriteLine();
+
+var (dsPassed, dsFailed) = Broker.Tests.NyaDbSeparationTests.Run();
+passed += dsPassed;
+failed += dsFailed;
+
+Console.WriteLine();
+
+var (tdPassed, tdFailed) = Broker.Tests.NyaTechDebtTests.Run();
+passed += tdPassed;
+failed += tdFailed;
+
+Console.WriteLine();
+
+var (lpPassed, lpFailed) = Broker.Tests.NyaLlmProfileStoreTests.Run();
+passed += lpPassed;
+failed += lpFailed;
+
+Console.WriteLine();
+
+var (pmPassed, pmFailed) = Broker.Tests.NyaProviderMappingTests.Run();
+passed += pmPassed;
+failed += pmFailed;
+
+Console.WriteLine();
+
+var (laPassed, laFailed) = Broker.Tests.NyaLlmAdminTests.Run();
+passed += laPassed;
+failed += laFailed;
+
+Console.WriteLine();
+
+var (dseedPassed, dseedFailed) = Broker.Tests.NyaDemoSeederTests.Run();
+passed += dseedPassed;
+failed += dseedFailed;
+
+Console.WriteLine();
+
+var (mqPassed, mqFailed) = Broker.Tests.NyaMemoryQualityTests.Run();
+passed += mqPassed;
+failed += mqFailed;
+
+Console.WriteLine();
+
+var (raPassed, raFailed) = Broker.Tests.NyaRoleAdminTests.Run();
+passed += raPassed;
+failed += raFailed;
+
+Console.WriteLine();
+
+var (ggPassed, ggFailed) = Broker.Tests.NyaGuestGateTests.Run();
+passed += ggPassed;
+failed += ggFailed;
+
+Console.WriteLine();
+
+var (taPassed, taFailed) = Broker.Tests.NyaTierAuthTests.Run();
+passed += taPassed;
+failed += taFailed;
+
+Console.WriteLine();
+
 var (agentPassed, agentFailed) = Broker.Tests.AgentContainerTests.Run();
 passed += agentPassed;
 failed += agentFailed;

@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>Broker.NyaChat.Abstractions</RootNamespace>
+
+    <Version>1.0.0</Version>
+    <Description>NyaChat 純契約包 — 介面與 DTO，零 broker 依賴。外部插件（如量化交易）只引用本專案。</Description>
+    <Authors>Bricks4Agent</Authors>
+  </PropertyGroup>
+
+  <!--
+    鐵則：本專案不得有任何 ProjectReference / PackageReference。
+    契約只使用 BCL 型別（Task / CancellationToken / IReadOnlyList…），
+    以編譯器強制「Nya 是插件，不是 broker 的心臟」的邊界。
+  -->
+
+</Project>

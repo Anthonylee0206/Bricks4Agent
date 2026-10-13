@@ -5,6 +5,7 @@ using Broker.Adapters;
 using Broker.Endpoints;
 using Broker.Middleware;
 using Broker.Services;
+using Broker.NyaChat;
 using FunctionPool.Container;
 using FunctionPool.Dispatch;
 using FunctionPool.Health;
@@ -558,6 +559,23 @@ builder.Services.AddSingleton<Broker.Services.IHighLevelExecutionModelPlanner, B
 startupLogger.LogInformation(
     "LINE Chat Gateway: enabled={Enabled}, rag={Rag}, provider={Provider}, model={Model}",
     lineChatConfig.Enabled, lineChatConfig.RagEnabled, highLevelLlmOptions.Provider, highLevelLlmOptions.DefaultModel);
+
+// ── NyaChat Engine V2 ────────────────────────────────────────────────────────
+builder.Services.AddSingleton(new BrokerCore.Crypto.AtRestSecretCrypto(masterKeyBase64));
+builder.Services.AddSingleton<Broker.NyaChat.INyaSecretProtector, Broker.Services.NyaTools.AtRestSecretProtector>();
+var nyaChatConfig = builder.Configuration.GetSection("NyaChat")
+    .Get<Broker.NyaChat.NyaChatConfig>()
+    ?? new Broker.NyaChat.NyaChatConfig();
+builder.Services.AddSingleton<Broker.NyaChat.Abstractions.INyaPrincipalResolver, Broker.Services.NyaTools.BrokerPrincipalResolver>();
+builder.Services.AddNyaChat(nyaChatConfig);
+builder.Services.AddSingleton<Broker.Services.NyaTools.NyaPrincipalBindingService>();
+builder.Services.AddSingleton<Broker.Services.NyaTools.NyaRoleAdminService>();
+builder.Services.AddSingleton<Broker.NyaChat.Abstractions.INyaToolAuthorizer, Broker.Services.NyaTools.BrokerTierToolAuthorizer>();
+builder.Services.AddNyaTool<Broker.Services.NyaTools.SearchToolPlugin>();
+builder.Services.AddNyaTool<Broker.Services.NyaTools.TransportToolPlugin>();
+startupLogger.LogInformation(
+    "NyaChat V2: enabled={Enabled}, provider={Provider}, model={Model}",
+    nyaChatConfig.Enabled, nyaChatConfig.ChatProvider, nyaChatConfig.ChatModel);
 var highLevelCoordinatorConfig = builder.Configuration.GetSection("HighLevelCoordinator").Get<Broker.Services.HighLevelCoordinatorOptions>()
     ?? new Broker.Services.HighLevelCoordinatorOptions();
 builder.Services.AddSingleton(highLevelCoordinatorConfig);
@@ -624,6 +642,14 @@ builder.Services.AddSingleton<IPlanEngine>(sp =>
 var app = builder.Build();
 
 app.Logger.LogInformation("Broker database path: {DbPath}", dbPath);
+
+var nyaDemoSeed = app.Configuration.GetSection("NyaDemoSeed").Get<Broker.Services.NyaTools.NyaDemoSeedOptions>();
+if (nyaDemoSeed?.Enabled == true)
+    Broker.Services.NyaTools.NyaDemoSeeder.Seed(
+        app.Services.GetRequiredService<BrokerDb>(),
+        app.Services.GetRequiredService<Broker.Services.NyaTools.NyaPrincipalBindingService>(),
+        nyaDemoSeed,
+        app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("NyaDemoSeed"));
 
 app.Use(async (context, next) =>
 {
@@ -970,6 +996,7 @@ GoogleDriveOAuthEndpoints.Map(api);
 ArtifactDownloadEndpoints.Map(api);
 PortalEndpoints.Map(api);
 LocalAdminEndpoints.Map(api);
+NyaChatEndpoints.Map(api);
 AgentEndpoints.Map(api);
 // [MONITORING EXTRACTION] health/worker endpoints 的 handler 依賴 IWorkerRegistry /
 // HealthScoreService 等 FunctionPool 服務。FunctionPool 關閉時這些服務不註冊,若 endpoint

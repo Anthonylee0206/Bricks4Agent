@@ -18,6 +18,7 @@
     <!-- 重用現有模組 -->
     <ProjectReference Include="..\security\RateLimiting\RateLimiting.csproj" />
     <ProjectReference Include="..\logging\BaseLogger\BaseLogger.csproj" />
+    <ProjectReference Include="..\nyachat\Broker.NyaChat\Broker.NyaChat.csproj" />
     <ProjectReference Include="..\workers\site-crawler-worker\SiteCrawlerWorker.csproj" />
   </ItemGroup>
 

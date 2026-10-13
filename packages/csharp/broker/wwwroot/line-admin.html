@@ -2,48 +2,62 @@
 <html lang="zh-TW">
 <head>
 <meta charset="UTF-8">
+<link rel="stylesheet" href="/nya-theme.css">
+<link rel="stylesheet" href="/admin-shell.css">
+<script src="/admin-shell.js" defer></script>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>B4A Admin</title>
 <style>
 :root{
-  --bg:#0f1117;--panel:#171b26;--panel-2:#202635;--border:#30384b;--text:#e7ebf5;--muted:#97a0b8;--accent:#53a7ff;--danger:#ff6b6b;--warn:#ffbf69;--ok:#56d39b;
+  /* Flat Outline Admin — 淺色綠系扁平。變數名稱保留(JS 依賴),只改值。 */
+  --bg:var(--nya-bg);--panel:var(--nya-surface);--panel-2:var(--nya-surface-2);--border:var(--nya-border);--border-strong:var(--nya-strong);--text:var(--nya-fg);--muted:var(--nya-fg-mut);--accent:var(--nya-green-dark);--danger:var(--nya-red);--warn:var(--nya-yellow-txt);--ok:var(--nya-green-dark);
+  --green-fill:var(--nya-green);--yellow-fill:var(--nya-yellow);
 }
 *{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--text);font-family:"Segoe UI","Noto Sans TC","Microsoft JhengHei",system-ui,sans-serif}
+body{margin:0;background:var(--bg);color:var(--text);font-family:var(--font-sans);font-size:14px;-webkit-font-smoothing:antialiased}
 button,input,select,textarea{font:inherit}
 a{color:var(--accent)}
-.shell{display:grid;grid-template-columns:260px 1fr;min-height:100vh}
-.sidebar{background:#0b0e14;border-right:1px solid var(--border);padding:16px;display:flex;flex-direction:column;gap:16px}
-.brand{font-size:20px;font-weight:700}
+.shell{display:flex;flex-direction:column;min-height:100%}
+.page-head{display:flex;align-items:center;gap:10px;min-height:52px;padding:0 16px;background:var(--panel);border-bottom:1px solid var(--border)}
+.page-head h1{margin:0;font-size:16px;font-weight:600}
+.page-head .spacer{flex:1}
 .muted{color:var(--muted)}
-.mono{font-family:Consolas,"Cascadia Mono","Courier New",monospace}
-.nav{display:flex;flex-direction:column;gap:8px}
-.nav button,.button{border:1px solid var(--border);background:var(--panel);color:var(--text);border-radius:10px;padding:10px 12px;cursor:pointer}
-.nav button.active{border-color:var(--accent);background:#18253a}
-.button.primary{background:#1a3558;border-color:#2f5d96}.button.danger{background:#442126;border-color:#7b303a}.button.warn{background:#45351e;border-color:#7b5f2c}.button.ghost{background:transparent}.button:disabled{opacity:.5;cursor:not-allowed}
-.content{padding:16px;display:flex;flex-direction:column;gap:16px}
-.tag{display:inline-flex;align-items:center;gap:8px;padding:6px 10px;border:1px solid var(--border);border-radius:999px;background:var(--panel)}.tag.ok{color:var(--ok)}.tag.bad{color:var(--danger)}.tag.test{color:var(--warn);border-color:#7b5f2c;background:#45351e}
-.grid{display:grid;gap:16px}.grid.two{grid-template-columns:1fr 1fr}.grid.line{grid-template-columns:320px 1fr}
-.panel{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:14px}.panel h2,.panel h3{margin:0 0 12px 0;font-size:18px}
+.mono{font-family:var(--font-mono);font-feature-settings:"tnum" 1}
+.nav{display:none}
+.button{display:inline-flex;align-items:center;justify-content:center;gap:6px;min-height:32px;border:1px solid var(--border-strong);background:var(--panel);color:var(--text);border-radius:4px;padding:6px 12px;font-size:13px;font-weight:500;cursor:pointer}
+.button:hover{background:var(--border-strong);color:#fff}
+.button.primary{background:var(--green-fill);border-color:var(--accent);color:#fff}.button.primary:hover{background:var(--accent)}
+.button.danger{background:var(--panel);border-color:var(--danger);color:var(--danger)}.button.danger:hover{background:var(--danger);color:#fff}
+.button.warn{background:var(--panel);border-color:var(--yellow-fill);color:var(--warn)}.button.warn:hover{background:#fff6dd;color:var(--warn)}
+.button.ghost{background:transparent;border-color:transparent}.button.ghost:hover{background:var(--bg);color:var(--text)}
+.button:disabled{opacity:.5;cursor:not-allowed}
+.content{padding:16px;display:flex;flex-direction:column;gap:16px;min-width:0}
+.tag{display:inline-flex;align-items:center;gap:8px;padding:2px 8px;border:1px solid var(--border-strong);border-radius:4px;background:var(--panel);font-size:12px}.tag.ok{color:var(--ok);border-color:var(--green-fill)}.tag.bad{color:var(--danger);border-color:var(--danger)}.tag.test{color:var(--warn);border-color:var(--yellow-fill);background:#fff6dd}
+.grid{display:grid;gap:16px}.grid.two{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}.grid.line{grid-template-columns:320px minmax(0,1fr)}
+.panel{background:var(--panel);border:1px solid var(--border-strong);border-radius:4px;padding:14px;min-width:0}.panel h2,.panel h3{margin:0 0 12px 0;font-size:15px;font-weight:600}
 .stack{display:flex;flex-direction:column;gap:10px}.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
-.list{border:1px solid var(--border);border-radius:10px;overflow:auto;max-height:360px;background:var(--panel-2)}
-.item{padding:10px 12px;border-bottom:1px solid var(--border);cursor:pointer}.item:last-child{border-bottom:none}.item:hover,.item.active{background:#263046}.item-title{font-weight:600;margin-bottom:4px}
+.list{border:1px solid var(--border);border-radius:4px;overflow:auto;max-height:360px;background:var(--panel-2)}
+.item{padding:10px 12px;border-bottom:1px solid var(--border);cursor:pointer}.item:last-child{border-bottom:none}.item:hover,.item.active{background:#dfe6da}.item-title{font-weight:600;margin-bottom:4px}
 .small{font-size:12px}
-.messages{min-height:340px;max-height:520px;overflow:auto;border:1px solid var(--border);border-radius:10px;padding:12px;background:var(--panel-2)}
-.message{margin-bottom:10px;padding:10px 12px;border-radius:12px;white-space:pre-wrap;line-height:1.5}.message.user{background:#26487a;margin-left:18%}.message.assistant{background:#1f2432;margin-right:18%}
-.json{background:var(--panel-2);border:1px solid var(--border);border-radius:10px;padding:10px;white-space:pre-wrap;word-break:break-word;max-height:320px;overflow:auto}
+.messages{min-height:340px;max-height:520px;overflow:auto;border:1px solid var(--border);border-radius:4px;padding:12px;background:var(--panel-2)}
+.message{margin-bottom:10px;padding:10px 12px;border-radius:4px;white-space:pre-wrap;line-height:1.5;border:1px solid var(--border)}.message.user{background:#e3efda;margin-left:18%}.message.assistant{background:#FFFFFF;margin-right:18%}
+.json{background:var(--panel-2);border:1px solid var(--border);border-radius:4px;padding:10px;white-space:pre-wrap;word-break:break-word;max-height:320px;overflow:auto;font-family:var(--font-mono);font-size:12px}
 .form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
 .field{display:flex;flex-direction:column;gap:6px}.field.full{grid-column:1 / -1}
 label{font-size:13px;color:var(--muted)}
-input,select,textarea{width:100%;border:1px solid var(--border);border-radius:10px;background:var(--panel-2);color:var(--text);padding:10px 12px}
+input,select,textarea{width:100%;border:1px solid var(--border-strong);border-radius:4px;background:var(--panel);color:var(--text);padding:6px 10px;min-height:32px;font-size:13px}
+input:focus,select:focus,textarea:focus{outline:none;border-color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent)}
 textarea{min-height:110px;resize:vertical}
-.hidden{display:none}
-.notice{padding:10px 12px;border-radius:10px;background:#132033;border:1px solid #28476f}
+input[type=checkbox],input[type=radio]{width:auto;min-height:0;padding:0;margin:0 6px 0 0;vertical-align:middle;accent-color:var(--green-fill)}
+label:has(input[type=checkbox]){color:var(--text)}
+.hidden{display:none !important}
+.notice{padding:10px 12px;border-radius:4px;background:#e3efda;border:1px solid var(--green-fill);font-size:13px}
 .error{color:var(--danger)}
-.login-screen{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px}
-.login-card{width:min(460px,100%);background:var(--panel);border:1px solid var(--border);border-radius:18px;padding:20px;display:flex;flex-direction:column;gap:14px}
-.login-title{font-size:24px;font-weight:700}
-@media (max-width:1180px){.shell{grid-template-columns:1fr}.grid.two,.grid.line,.form-grid{grid-template-columns:1fr}.message.user,.message.assistant{margin:0}}
+.login-screen{flex:1;min-height:100%;display:flex;align-items:center;justify-content:center;padding:24px;background:var(--bg)}
+.login-card{width:min(460px,100%);background:var(--panel);border:1px solid var(--border-strong);border-radius:4px;padding:20px;display:flex;flex-direction:column;gap:14px}
+.login-title{font-size:20px;font-weight:700}
+table{border-color:var(--border)}th,td{border-color:var(--border)}th{color:var(--muted)}
+@media (max-width:1180px){.grid.two,.grid.line,.form-grid{grid-template-columns:1fr}.message.user,.message.assistant{margin:0}}
 </style>
 </head>
 <body>
@@ -72,15 +86,6 @@ textarea{min-height:110px;resize:vertical}
   </div>
 </div>
 <div id="admin-shell" class="shell hidden">
-  <aside class="sidebar">
-    <div>
-      <div class="brand">B4A Admin</div>
-      <div class="muted small">統一管理後台</div>
-    </div>
-    <div class="stack">
-      <div class="tag" id="status-tag">狀態讀取中</div>
-      <div class="small muted" id="status-meta">載入中</div>
-    </div>
     <nav class="nav">
       <button data-tab="line" data-permission="permission.user.manage" class="active">LINE 與使用者</button>
       <button data-tab="monitoring" data-permission="system.monitor.read">系統監控</button>
@@ -93,13 +98,15 @@ textarea{min-height:110px;resize:vertical}
       <button data-tab="alerts" data-permission="system.monitor.read">系統警示</button>
       <button data-tab="tools" data-permission="tool_spec.read">Tool Specs</button>
     </nav>
-    <div class="stack">
-      <button class="button primary" id="refresh-all">全部重新整理</button>
-      <button class="button ghost" id="auto-refresh-toggle">自動刷新：關</button>
-      <button class="button danger" id="logout-admin">登出</button>
-    </div>
-  </aside>
-  <main class="content">
+  <div class="page-head">
+    <h1 id="page-title">LINE 與使用者</h1>
+    <span class="tag" id="status-tag">狀態讀取中</span>
+    <div class="spacer"></div>
+    <button class="button ghost" id="auto-refresh-toggle">自動刷新：關</button>
+    <button class="button primary" id="refresh-all">全部重新整理</button>
+    <button class="button danger hidden" id="logout-admin">登出</button>
+  </div>
+  <div class="content" id="admin-content">
     <section id="tab-line" class="grid line">
       <div class="stack">
         <div class="panel">
@@ -558,7 +565,7 @@ textarea{min-height:110px;resize:vertical}
     </section>
 
     <div id="notice" class="notice">後台已載入。</div>
-  </main>
+  </div>
 </div>
 <script>
 const BASE = "";
@@ -642,6 +649,7 @@ function syncPermissionAwareUi() {
   for (const button of document.querySelectorAll("[data-tab]")) {
     const tab = button.dataset.tab;
     button.classList.toggle("hidden", !canOpenTab(tab));
+    window.B4AShell?.setVisible("/line-admin.html#" + tab, canOpenTab(tab));
   }
 
   for (const node of document.querySelectorAll("[data-permission]")) {
@@ -719,11 +727,6 @@ function renderAuthState() {
     ? "首次登入請使用帳號 admin 與初始密碼 admin，並設定新密碼。"
     : (state.authStatus?.requiresPasswordChange ? "目前必須先變更管理密碼。" : "請輸入管理員帳號與密碼。");
   byId("login-hint").textContent = hint;
-  if (authenticated) {
-    const username = state.authStatus?.username || state.authStatus?.Username || "admin";
-    const role = state.authStatus?.role || state.authStatus?.Role || "unknown";
-    byId("status-meta").textContent = `${username} / ${role}`;
-  }
   syncPermissionAwareUi();
 }
 
@@ -768,12 +771,6 @@ function renderSystem() {
   const tag = byId("status-tag");
   tag.textContent = "系統狀態：" + status;
   tag.className = "tag " + (status === "ok" ? "ok" : "bad");
-  const llm = state.system?.services?.llm;
-  const username = state.authStatus?.username || state.authStatus?.Username || "admin";
-  const role = state.authStatus?.role || state.authStatus?.Role || "unknown";
-  byId("status-meta").textContent = llm
-    ? `${username} / ${role} / ${llm.provider || "n/a"} / ${llm.model || "n/a"}`
-    : `${username} / ${role}`;
   byId("summary-conversations").textContent = state.system?.database?.active_conversations ?? 0;
   byId("summary-context").textContent = state.system?.database?.shared_context_entries ?? 0;
   byId("summary-vectors").textContent = state.system?.database?.vector_entries ?? 0;
@@ -1136,10 +1133,14 @@ async function showTab(tab) {
     return;
   }
   state.tab = tab;
+  const tabButton = document.querySelector(`[data-tab="${tab}"]`);
+  byId("page-title").textContent = tabButton ? tabButton.firstChild.textContent.trim() : tab;
+  if (location.hash.slice(1) !== tab) history.replaceState(null, "", "#" + tab);
+  window.B4AShell?.sync();
   for (const button of document.querySelectorAll("[data-tab]")) {
     button.classList.toggle("active", button.dataset.tab === tab);
   }
-  for (const section of document.querySelectorAll("main > section")) {
+  for (const section of document.querySelectorAll("#admin-content > section")) {
     section.classList.toggle("hidden", section.id !== `tab-${tab}`);
   }
   if (tab === "workflow" && !state.workflowLoaded) {
@@ -2030,7 +2031,14 @@ async function initializeAdminApp() {
   state.browserLoaded = false;
   state.deploymentLoaded = false;
   state.toolsLoaded = false;
+  const requested = tabFromHash();
+  if (requested && requested !== state.tab) await showTab(requested);
   await refreshAll();
+}
+
+function tabFromHash() {
+  const tab = location.hash.replace(/^#/, "");
+  return tab && document.querySelector(`[data-tab="${tab}"]`) ? tab : "";
 }
 
 function toggleAutoRefresh() {
@@ -2155,6 +2163,10 @@ async function retryNotification(notificationId) {
 }
 
 function bindEvents() {
+  window.addEventListener("hashchange", wrapAction(async () => {
+    const requested = tabFromHash();
+    if (requested && requested !== state.tab && state.authStatus?.authenticated) await showTab(requested);
+  }));
   for (const button of document.querySelectorAll("[data-tab]")) {
     button.addEventListener("click", wrapAction(() => showTab(button.dataset.tab)));
   }

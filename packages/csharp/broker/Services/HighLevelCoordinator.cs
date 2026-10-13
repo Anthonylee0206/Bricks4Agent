@@ -5,6 +5,8 @@ using BrokerCore;
 using BrokerCore.Data;
 using BrokerCore.Models;
 using BrokerCore.Services;
+using Broker.NyaChat;
+using NyaAbstractions = Broker.NyaChat.Abstractions;
 
 namespace Broker.Services;
 
@@ -37,6 +39,9 @@ public class HighLevelCoordinator
     private readonly IPlanService _planService;
     private readonly ITaskRouter _taskRouter;
     private readonly LineChatGateway _lineChatGateway;
+    // 大項一 6C-final：改吃通道無關契約介面，移除對具象 NyaChatOrchestrator 的依賴。
+    // 大項四：工具執行閉環已內化至 Nya；HLC 不再處理 PendingTool，Replies 即最終回覆。
+    private readonly NyaAbstractions.INyaChatOrchestrator? _nyaChatOrchestrator;
     private readonly HighLevelQueryToolMediator _queryToolMediator;
     private readonly HighLevelRelationQueryService _relationQueryService;
     private readonly HighLevelCoordinatorOptions _options;
@@ -79,6 +84,7 @@ public class HighLevelCoordinator
         IPlanService planService,
         ITaskRouter taskRouter,
         LineChatGateway lineChatGateway,
+        NyaAbstractions.INyaChatOrchestrator? nyaChatOrchestrator,
         HighLevelQueryToolMediator queryToolMediator,
         HighLevelRelationQueryService relationQueryService,
         HighLevelCoordinatorOptions options,
@@ -105,6 +111,7 @@ public class HighLevelCoordinator
         _planService = planService;
         _taskRouter = taskRouter;
         _lineChatGateway = lineChatGateway;
+        _nyaChatOrchestrator = nyaChatOrchestrator;
         _queryToolMediator = queryToolMediator;
         _relationQueryService = relationQueryService;
         _options = options;
@@ -139,7 +146,8 @@ public class HighLevelCoordinator
     public async Task<HighLevelProcessResult> ProcessLineMessageAsync(
         string userId,
         string message,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        bool isAutoExec = false)
     {
         const string channel = "line";
         var envelope = BuildLineEnvelope(message);
@@ -560,8 +568,34 @@ public class HighLevelCoordinator
         var chatInput = decision.Mode == HighLevelRouteMode.Query && !string.IsNullOrWhiteSpace(parsed.Body)
             ? parsed.Body
             : trimmed;
+
+        if (_nyaChatOrchestrator?.IsEnabled == true)
+        {
+            // 大項四：工具執行閉環已完全在 Nya 內完成（查 plugin → 授權 → 執行 → 二次 LLM 個性化）。
+            // Nya 回傳的 Replies 即最終回覆，HLC 不再偵測 / 執行外部工具（PendingTool 繞道已移除）。
+            var nyaResult = await _nyaChatOrchestrator.ChatAsync(
+                new NyaAbstractions.NyaChatRequest { ChannelType = channel, ChannelUserId = userId, Message = chatInput },
+                cancellationToken);
+
+            var nyaFirst = nyaResult.Replies.FirstOrDefault() ?? "";
+            var nyaReply = string.IsNullOrWhiteSpace(nyaFirst) ? "" : PrepareReplySafe(profile, trimmed, nyaFirst);
+            SaveUserProfile(channel, userId, profile);
+            return FinalizeResult(channel, userId, envelope, trustedParse, workflow, new HighLevelProcessResult
+            {
+                Mode            = decision.Mode,
+                Reply           = nyaReply,
+                FollowUpMessages = nyaResult.Replies.Count > 1 ? nyaResult.Replies.Skip(1).ToList() : null,
+                Error           = nyaResult.Error,
+                DecisionReason  = "nya_chat_v2",
+                HistoryCount    = nyaResult.HistoryCount
+            });
+        }
+
+
         var chat = await _lineChatGateway.ChatAsync(userId, chatInput, cancellationToken);
         var replyBody = chat.Reply;
+
+
         if (decision.Mode == HighLevelRouteMode.Query && string.IsNullOrWhiteSpace(replyBody))
             replyBody = "目前沒有取得穩定答案。";
 

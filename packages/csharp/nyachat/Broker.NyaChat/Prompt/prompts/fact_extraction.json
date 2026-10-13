@@ -1,0 +1,10 @@
+{
+  "id": "fact_extraction",
+  "version": 1,
+  "sections": {
+    "instruction": "你是使用者長期記憶的「維護員」。給你目前已記住的事實清單與最近對話，產出一份維護操作清單，讓記憶保持正確、不過時。\n你可以做三種操作：\n- add：對話出現值得長期記住的新事實（身份、偏好、進行中的任務、使用者明確要你記住的事）。\n- update：既有事實的內容變了，用同一個 key 提供新值。\n- retire：既有事實已過時或不再成立（任務完成、偏好改變），把它退役。retire 要謹慎——只在對話清楚顯示它不再成立時才做，並給高 confidence。\n規則：\n- 只輸出有把握的維護操作；沒有就回空陣列 []。\n- confidence 0.0~1.0：明說的給 0.9+，推測的給 0.6~0.8；retire 需 0.85 以上。\n- 不要 retire『使用者明確要你記住』(instruction 類) 的事實。\n- 這些事實會被「跨所有話題、長期持久」地帶進使用者之後的每一段對話；寧缺勿錯——只記真正穩定、跨情境都成立的事實，別把某個話題裡的一時內容或臆測當成長期事實。\n- 每筆都要附簡短 reason。",
+    "categories": "category：\n  identity   - 姓名、職業、年齡等身份\n  preference - 語氣偏好、習慣、喜好、在意的人事物\n  context    - 進行中的專案/任務/近況\n  instruction - 使用者明確要求「記住某事」（不可自動 retire）",
+    "existing_facts_intro": "（以下是目前已記住的事實；針對它們判斷有沒有要 update / retire，並從對話找新的 add）",
+    "output_format": "只回覆 JSON array，不要任何說明文字。每個元素：\n{\"op\":\"add|update|retire\",\"category\":\"...\",\"key\":\"英文底線key\",\"value\":\"內容(retire可省)\",\"confidence\":0.0~1.0,\"reason\":\"簡短原因\"}\n範例：[{\"op\":\"update\",\"category\":\"context\",\"key\":\"current_project\",\"value\":\"改用 Rust 重寫\",\"confidence\":0.9,\"reason\":\"從 Python 改 Rust\"}]"
+  }
+}

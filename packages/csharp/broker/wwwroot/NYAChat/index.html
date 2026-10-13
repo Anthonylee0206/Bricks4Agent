@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+
+<head>
+  <meta charset="utf-8">
+<link rel="stylesheet" href="/nya-theme.css">
+<link rel="stylesheet" href="/admin-shell.css">
+<script src="/admin-shell.js" defer></script>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NyaChat Admin</title>
+  <style>
+    :root {
+      --c-bg: var(--nya-bg);
+      --c-surface: var(--nya-surface);
+      --c-hover: #FAFBFA;
+      --c-border: var(--nya-border);
+      --c-border-soft: #E2E4E1;
+      --c-border-strong: var(--nya-strong);
+      --c-fg: var(--nya-fg);
+      --c-fg2: var(--nya-fg-mut);
+      --c-fg3: #9AA098;
+      --c-fg4: #C2C6C2;
+      --c-accent: var(--nya-green);
+      --c-accent-fg: var(--nya-green-dark);
+      --c-accent-soft: #F0F5EC;
+      --c-danger: var(--nya-red);
+      --c-danger-fg: #B71C1C;
+      --c-danger-soft: #FFF0F0;
+      --c-warn: var(--nya-yellow-txt);
+      --c-warn-soft: #FFFBF0;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; }
+
+    body {
+      font-family: var(--font-sans);
+      font-size: 14px;
+      line-height: 1.4;
+      color: var(--c-fg);
+      background: var(--c-bg);
+      -webkit-font-smoothing: antialiased;
+    }
+
+    #root { height: 100%; }
+
+    button, input, select, textarea { font-family: inherit; }
+
+    a { color: var(--c-accent-fg); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    p, h1, h2, h3 { margin: 0; }
+
+    .mono { font-family: var(--font-mono); font-feature-settings: "tnum" 1; }
+
+    code, pre, kbd, samp { font-family: var(--font-mono); font-size: 12px; }
+
+    kbd {
+      display: inline-block; padding: 0 5px; line-height: 18px;
+      border: 1px solid var(--c-border-strong); border-radius: 3px;
+      background: var(--c-surface); color: var(--c-fg2); font-size: 11px;
+    }
+
+    :focus-visible { outline: 2px solid var(--c-accent); outline-offset: 1px; }
+    input:focus-visible, select:focus-visible, textarea:focus-visible { outline: none; }
+
+    ::-webkit-scrollbar { width: 8px; height: 8px; }
+    ::-webkit-scrollbar-thumb { background: var(--c-border-strong); border-radius: 4px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+
+    ::selection { background: var(--c-accent-soft); color: var(--c-fg); }
+
+    @keyframes nya-spin { to { transform: rotate(360deg); } }
+  </style>
+
+  <!-- ── 後端連線確認：永遠使用真實後端，連線失敗直接顯示錯誤頁面 ── -->
+  <script>
+    (function () {
+      window.MOCK_MODE = false;
+
+      window.__nyaReady = new Promise(async function (resolve) {
+        const STATUS_URL = '/api/v1/local-admin/nya/status';
+        const TIMEOUT_MS = 5000;
+
+        function showError(html) {
+          if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', function () { showError(html); }, { once: true });
+            return;
+          }
+          var root = document.getElementById('root');
+          if (root) {
+            root.innerHTML =
+              '<div style="display:flex;align-items:center;justify-content:center;height:100%;background:var(--c-bg);">' +
+              '<div style="width:min(420px,calc(100vw - 32px));padding:24px;background:var(--c-surface);' +
+              'border:1px solid var(--c-fg);">' +
+              '<h2 style="color:var(--c-fg);font-size:16px;font-weight:600;margin-bottom:8px;">無法開啟 NyaChat 管理</h2>' +
+              '<p style="color:var(--c-fg2);line-height:1.6;font-size:13px;margin-bottom:20px;">' + html + '</p>' +
+              '<div style="display:flex;gap:8px;">' +
+              '<a href="/line-admin.html" style="display:inline-flex;align-items:center;height:32px;padding:0 14px;' +
+              'background:var(--c-accent);color:#fff;border-radius:4px;text-decoration:none;font-size:13px;font-weight:500;">前往登入</a>' +
+              '<button onclick="location.reload()" style="height:32px;padding:0 14px;background:var(--c-surface);' +
+              'color:var(--c-fg);border:1px solid var(--c-fg);border-radius:4px;cursor:pointer;font-size:13px;font-weight:500;">重新整理</button>' +
+              '</div></div></div>';
+          }
+          // 不呼叫 resolve()，React 不會掛載
+        }
+
+        try {
+          var ctl = new AbortController();
+          var tid = setTimeout(function () { ctl.abort(); }, TIMEOUT_MS);
+          var res = await fetch(STATUS_URL, {
+            method: 'GET',
+            credentials: 'include',
+            signal: ctl.signal,
+          });
+          clearTimeout(tid);
+
+          if (res.status === 200) {
+            try {
+              var json = await res.json();
+              if (json && json.success === true) {
+                console.info('[NyaChat] 後端連線成功');
+                resolve();
+                return;
+              }
+            } catch (_) { }
+            showError('後端回傳 200 但格式不符，可能版本不相容。');
+            return;
+          }
+
+          if (res.status === 403) {
+            showError('拒絕連線');
+          } else if (res.status === 401) {
+            showError(
+              '尚未登入或 Session 已過期。<br>' +
+              '請先完成登入後，再重新整理。'
+            );
+          } else {
+            showError('後端回傳非預期狀態碼：HTTP ' + res.status);
+          }
+        } catch (err) {
+          var reason = err.name === 'AbortError'
+            ? '連線逾時（' + (TIMEOUT_MS / 1000) + ' 秒）'
+            : err.message;
+          showError('無法連線至後端伺服器。<br>原因：' + reason + '<br><br>請確認 Broker 服務已啟動，且使用 localhost / 127.0.0.1 存取。');
+        }
+      });
+    })();
+  </script>
+
+  <script src="/vendor/react@18.3.1/react.development.js"
+    integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L"
+    crossorigin="anonymous"></script>
+  <script src="/vendor/react-dom@18.3.1/react-dom.development.js"
+    integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm"
+    crossorigin="anonymous"></script>
+  <script src="/vendor/babel-standalone@7.29.0/babel.min.js"
+    integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y"
+    crossorigin="anonymous"></script>
+</head>
+
+<body>
+  <div id="root" class="b4a-fill"></div>
+
+  <!-- 2. UI primitives -->
+  <script type="text/babel" src="ui.jsx"></script>
+
+  <!-- 3. API wrapper (uses window.mockResolve) -->
+  <script type="text/babel" src="api.jsx"></script>
+
+  <!-- 4. Shared components (Toast, Confirm, Table, Pagination…) -->
+  <script type="text/babel" src="components.jsx"></script>
+
+  <!-- 5. Pages (load order matters: misc/facts before PageC) -->
+  <script type="text/babel" src="PageB.jsx"></script>
+  <script type="text/babel" src="PageHome.jsx"></script>
+  <script type="text/babel" src="PageC_misc.jsx"></script>
+  <script type="text/babel" src="PageC_facts.jsx"></script>
+  <script type="text/babel" src="PageC.jsx"></script>
+  <script type="text/babel" src="PageD.jsx"></script>
+  <script type="text/babel" src="PageE.jsx"></script>
+  <script type="text/babel" src="PageF.jsx"></script>
+  <script type="text/babel" src="PageG.jsx"></script>
+  <script type="text/babel" src="PageH.jsx"></script>
+
+  <!-- 6. App shell — mounts last -->
+  <script type="text/babel" src="App.jsx"></script>
+</body>
+
+</html>
