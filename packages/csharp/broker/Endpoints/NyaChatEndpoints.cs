@@ -58,6 +58,10 @@ public static class NyaChatEndpoints
                 return denied;
             }
 
+            if (!auth.TryRequireAuthenticated(ctx, out var operatorSession, out var sessionDenied))
+                return sessionDenied;
+            using var auditScope = ctx.RequestServices.GetRequiredService<NyaAuditLogger>()
+                .BeginAdminOperation(operatorSession.Username, operatorSession.Role);
             return await next(filterContext);
         });
 
@@ -112,7 +116,12 @@ public static class NyaChatEndpoints
                 return Results.BadRequest(ApiResponseHelper.Error("Request body must contain { \"enabled\": true|false }"));
 
             var enabled = enabledEl.GetBoolean();
-            toolRegistry.SetEnabled(toolId, enabled);
+            try { toolRegistry.SetEnabled(toolId, enabled); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                auditLogger.LogError("__sys__", "tool_toggle", ex.Message);
+                return Results.Json(ApiResponseHelper.Error($"Tool toggle could not be saved: {ex.Message}", 500), statusCode: 500);
+            }
             auditLogger.LogToolToggle(toolId, enabled);
 
             return Results.Ok(ApiResponseHelper.Success(new
@@ -144,13 +153,15 @@ public static class NyaChatEndpoints
         nya.MapPost("/prompts/reload", (
             HttpContext ctx,
             LocalAdminAuthService auth,
-            NyaPromptTemplateProvider templates) =>
+            NyaPromptTemplateProvider templates,
+            NyaAuditLogger auditLogger) =>
         {
             if (!auth.TryRequireAuthenticated(ctx, out _, out var denied))
                 return denied;
 
             templates.Reload();
             var list = templates.ListTemplates();
+            auditLogger.LogReload("prompt_reload", list.Count);
             return Results.Ok(ApiResponseHelper.Success(new
             {
                 ok = true,
@@ -177,7 +188,6 @@ public static class NyaChatEndpoints
             var tasks = new[]
             {
                 Broker.NyaChat.NyaLlmTasks.Chat,
-                Broker.NyaChat.NyaLlmTasks.FactExtraction,
                 Broker.NyaChat.NyaLlmTasks.Summarization
             };
             var routing = tasks.ToDictionary(
@@ -191,6 +201,7 @@ public static class NyaChatEndpoints
             return Results.Ok(ApiResponseHelper.Success(new
             {
                 enabled = config.Enabled,
+                auto_summarize_enabled = config.AutoSummarizeEnabled,
                 // Doc 3 Plan C：以呼叫點路由解析後的實際 model/provider 呈現
                 task_routing = routing,
                 profiles = store.ListProfiles().Select(e => new
@@ -203,7 +214,6 @@ public static class NyaChatEndpoints
                 // 相容鍵：沿用舊欄位名，值改取自 chat 路由結果
                 chat_model = routing[Broker.NyaChat.NyaLlmTasks.Chat].model,
                 chat_provider = routing[Broker.NyaChat.NyaLlmTasks.Chat].provider,
-                fact_extraction_model = routing[Broker.NyaChat.NyaLlmTasks.FactExtraction].model,
                 summarization_model = routing[Broker.NyaChat.NyaLlmTasks.Summarization].model,
                 short_term_message_limit = config.ShortTermMessageLimit,
                 summarize_trigger_count = config.SummarizeTriggerCount,
@@ -215,78 +225,50 @@ public static class NyaChatEndpoints
         });
 
         // ── 可重載配置（大項六 6D）────────────────────────────────────────────
-        // GET：回傳當前生效的完整配置快照（可編輯欄位）。
-        nya.MapGet("/config", (
-            HttpContext ctx,
-            LocalAdminAuthService auth,
-            INyaConfigStore<NyaChatConfig> configStore) =>
+        nya.MapGet("/config", (HttpContext ctx, LocalAdminAuthService auth, INyaConfigStore<NyaChatConfig> configStore) =>
         {
-            if (!auth.TryRequireAuthenticated(ctx, out _, out var denied))
-                return denied;
-
-            return Results.Ok(ApiResponseHelper.Success(configStore.Current));
+            if (!auth.TryRequireAuthenticated(ctx, out _, out var denied)) return denied;
+            return Results.Ok(ApiResponseHelper.Success(NyaChatHotSettings.MaskSecrets(configStore.Current)));
         });
 
-        // PUT：以當前快照為基底，僅覆寫 body 中出現且非唯讀的欄位，持久化後立即生效（免重啟）。
-        // 啟動期固定值（SoulsDirectory / PromptsDirectory）為唯讀，忽略 body 中的同名欄位。
-        nya.MapPut("/config", async (
-            HttpContext ctx,
-            LocalAdminAuthService auth,
-            INyaConfigStore<NyaChatConfig> configStore,
-            NyaAuditLogger auditLogger) =>
+        nya.MapGet("/config/effective", (HttpContext ctx, LocalAdminAuthService auth, INyaConfigStore<NyaChatConfig> configStore) =>
         {
-            if (!auth.TryRequireAuthenticated(ctx, out _, out var denied))
-                return denied;
+            if (!auth.TryRequireAuthenticated(ctx, out _, out var denied)) return denied;
+            return Results.Ok(ApiResponseHelper.Success(((NyaChatConfigStore)configStore).Effective()));
+        });
 
-            var body = RequestBodyHelper.GetBody(ctx);
-            if (body.ValueKind != JsonValueKind.Object)
-                return Results.BadRequest(ApiResponseHelper.Error("Request body must be a JSON object of config fields."));
-
-            // 深拷貝當前快照為 JSON node（鍵為 PascalCase 屬性名）
-            var node = JsonNode.Parse(JsonSerializer.Serialize(configStore.Current))!.AsObject();
-            var keyMap = node.Select(kv => kv.Key)
-                             .ToDictionary(k => k, k => k, StringComparer.OrdinalIgnoreCase);
-            var readOnly = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "SoulsDirectory", "PromptsDirectory" };
-
-            var changed = new List<string>();
-            foreach (var prop in body.EnumerateObject())
+        static async Task<IResult> PatchConfig(HttpContext ctx, LocalAdminAuthService auth, INyaConfigStore<NyaChatConfig> configStore, NyaSoulProvider soulProvider)
+        {
+            if (!auth.TryRequireAuthenticated(ctx, out var session, out var denied)) return denied;
+            try
             {
-                if (readOnly.Contains(prop.Name)) continue;          // 唯讀欄位略過
-                if (!keyMap.TryGetValue(prop.Name, out var actualKey)) continue; // 未知欄位忽略
-                node[actualKey] = JsonNode.Parse(prop.Value.GetRawText());
-                changed.Add(actualKey);
+                var patch = RequestBodyHelper.GetBody(ctx);
+                if (patch.ValueKind == JsonValueKind.Object)
+                    foreach (var property in patch.EnumerateObject())
+                        if (property.Name.Equals("DefaultSoulId", StringComparison.OrdinalIgnoreCase) && property.Value.ValueKind == JsonValueKind.String &&
+                            !soulProvider.ListSouls().Any(s => s.Id.Equals(property.Value.GetString(), StringComparison.OrdinalIgnoreCase)))
+                            return Results.BadRequest(ApiResponseHelper.Error("DefaultSoulId 必須指向現有 Soul，請先至 Soul 人格頁建立。"));
+                var changed = await ((NyaChatConfigStore)configStore).PatchAsync(patch, session.Username, session.Role, ctx.RequestAborted);
+                return Results.Ok(ApiResponseHelper.Success(new { changed, config = NyaChatHotSettings.MaskSecrets(configStore.Current) }));
             }
+            catch (ArgumentException ex) { return Results.BadRequest(ApiResponseHelper.Error(ex.Message)); }
+        }
 
-            if (changed.Count == 0)
-                return Results.BadRequest(ApiResponseHelper.Error("No editable fields supplied."));
-
-            NyaChatConfig updated;
-            try { updated = node.Deserialize<NyaChatConfig>()!; }
-            catch (Exception ex)
-            {
-                return Results.BadRequest(ApiResponseHelper.Error($"Invalid config payload: {ex.Message}"));
-            }
-
-            // 大項三：對預算欄位做值域驗證，避免熱套用不合理值破壞截斷邏輯。
-            var budgetError = ValidateBudgetConfig(updated);
-            if (budgetError != null)
-                return Results.BadRequest(ApiResponseHelper.Error(budgetError));
-
-            await configStore.UpdateAsync(updated, ctx.RequestAborted);
-            auditLogger.LogConfigUpdate(changed);
-
-            return Results.Ok(ApiResponseHelper.Success(new
-            {
-                changed,
-                config = updated
-            }));
+        nya.MapPatch("/config", PatchConfig);
+        nya.MapPut("/config", PatchConfig);
+        nya.MapPost("/config/reset", async (HttpContext ctx, LocalAdminAuthService auth, INyaConfigStore<NyaChatConfig> configStore) =>
+        {
+            if (!auth.TryRequireAuthenticated(ctx, out var session, out var denied)) return denied;
+            await ((NyaChatConfigStore)configStore).ResetAsync(session.Username, session.Role, ctx.RequestAborted);
+            return Results.Ok(ApiResponseHelper.Success(((NyaChatConfigStore)configStore).Effective()));
         });
 
         // ── NEW-1: 列出所有使用者 ─────────────────────────────────────────────────
         nya.MapGet("/users", (
             HttpContext ctx,
             LocalAdminAuthService auth,
-            NyaMemoryService memoryService) =>
+            NyaMemoryService memoryService,
+            NyaSoulProvider soulProvider) =>
         {
             if (!auth.TryRequireAuthenticated(ctx, out _, out var denied))
                 return denied;
@@ -304,13 +286,20 @@ public static class NyaChatEndpoints
                 limit,
                 offset,
                 keyword,
-                users = users.Select(u => new
+                users = users.Select(u =>
                 {
-                    user_id           = u.UserId,
-                    message_count     = u.MsgCount,
-                    active_fact_count = u.ActiveFactCount,
-                    last_message_at   = u.LastAt,
-                    soul_id           = u.SoulId
+                    var resolved = soulProvider.ResolveSoul(u.UserId);
+                    return new
+                    {
+                        user_id           = u.UserId,
+                        message_count     = u.MsgCount,
+                        active_fact_count = u.ActiveFactCount,
+                        last_message_at   = u.LastAt,
+                        soul_id           = resolved.Soul.SoulId,
+                        bound_soul_id     = resolved.BoundSoulId,
+                        effective_soul_id = resolved.Soul.SoulId,
+                        soul_reason       = resolved.Reason
+                    };
                 })
             }));
         });
@@ -320,6 +309,8 @@ public static class NyaChatEndpoints
             HttpContext ctx,
             LocalAdminAuthService auth,
             NyaMemoryService memoryService,
+            NyaSoulProvider soulProvider,
+            INyaConfigStore<NyaChatConfig> configStore,
             string userId) =>
         {
             if (!auth.TryRequireAuthenticated(ctx, out _, out var denied))
@@ -332,16 +323,26 @@ public static class NyaChatEndpoints
                 return Results.Json(ApiResponseHelper.Error($"GetUserOverview failed: {ex.Message}", 500), statusCode: 500);
             }
 
+            var resolved = soulProvider.ResolveSoul(userId);
+            var config = configStore.Current;
+            var recentHistory = memoryService.GetRecentMessages(userId, config.ShortTermMessageLimit,
+                includeSummarized: !config.AutoSummarizeEnabled);
             return Results.Ok(ApiResponseHelper.Success(new
             {
                 user_id  = ov.UserId,
-                soul_id  = ov.SoulId,
+                auto_summarize_enabled = config.AutoSummarizeEnabled,
+                short_term_message_limit = config.ShortTermMessageLimit,
+                soul_id  = resolved.Soul.SoulId,
+                bound_soul_id = resolved.BoundSoulId,
+                effective_soul_id = resolved.Soul.SoulId,
+                soul_reason = resolved.Reason,
                 messages = new
                 {
                     total      = ov.Messages.Total,
                     active     = ov.Messages.Active,
                     summarized = ov.Messages.Summarized,
-                    deleted    = ov.Messages.Deleted
+                    deleted    = ov.Messages.Deleted,
+                    recent_history = recentHistory.Count
                 },
                 facts = new
                 {
@@ -410,7 +411,27 @@ public static class NyaChatEndpoints
                 confEl.ValueKind == System.Text.Json.JsonValueKind.Number)
                 confidence = confEl.GetSingle();
 
-            var fact = memoryService.UpsertFact(userId, category, key, value, null, confidence);
+            string? sourceText = null;
+            if (body.TryGetProperty("source_text", out var sourceEl) && sourceEl.ValueKind != JsonValueKind.Null)
+            {
+                if (sourceEl.ValueKind != JsonValueKind.String)
+                    return Results.BadRequest(ApiResponseHelper.Error("source_text must be a string.", 400));
+                sourceText = sourceEl.GetString();
+            }
+
+            DateTime? expiresAt = null;
+            if (body.TryGetProperty("expires_in_days", out var daysEl) && daysEl.ValueKind != JsonValueKind.Null)
+            {
+                if (daysEl.ValueKind != JsonValueKind.Number || !daysEl.TryGetInt32(out var days) || days <= 0)
+                    return Results.BadRequest(ApiResponseHelper.Error("expires_in_days must be a positive integer.", 400));
+                try { expiresAt = DateTime.UtcNow.AddDays(days); }
+                catch (ArgumentOutOfRangeException)
+                {
+                    return Results.BadRequest(ApiResponseHelper.Error("expires_in_days is out of range.", 400));
+                }
+            }
+
+            var fact = memoryService.UpsertFact(userId, category, key, value, null, confidence, sourceText, expiresAt);
             auditLogger.LogFactUpsert(userId, key, category, fact.Version);
 
             return Results.Ok(ApiResponseHelper.Success(new
@@ -420,6 +441,8 @@ public static class NyaChatEndpoints
                 fact_key   = fact.FactKey,
                 category   = fact.Category,
                 fact_value = fact.FactValue,
+                source_text = fact.SourceText,
+                expires_at = fact.ExpiresAt?.ToString("O"),
                 version    = fact.Version
             }));
         });
@@ -438,17 +461,19 @@ public static class NyaChatEndpoints
             }));
         });
 
-        nya.MapPost("/souls/reload", (HttpContext ctx, LocalAdminAuthService auth, NyaSoulProvider soulProvider) =>
+        nya.MapPost("/souls/reload", (HttpContext ctx, LocalAdminAuthService auth, NyaSoulProvider soulProvider, NyaAuditLogger auditLogger) =>
         {
             if (!auth.TryRequireAuthenticated(ctx, out _, out var denied))
                 return denied;
 
-            soulProvider.ReloadSouls();
+            var failures = soulProvider.ReloadSouls().Select(f => new { file = f.File, message = f.Message }).ToArray();
             var souls = soulProvider.ListSouls();
+            auditLogger.LogReload("soul_reload", souls.Count, failures, failures.Length == 0 ? "success" : "error");
             return Results.Ok(ApiResponseHelper.Success(new
             {
-                ok = true,
+                ok = failures.Length == 0,
                 loaded = souls.Count,
+                failures,
                 souls = souls.Select(s => new { id = s.Id, display_name = s.DisplayName })
             }));
         });
@@ -459,6 +484,7 @@ public static class NyaChatEndpoints
             HttpContext ctx,
             LocalAdminAuthService auth,
             NyaSoulProvider soulProvider,
+            NyaDb nyaDb,
             string soulId) =>
         {
             if (!auth.TryRequireAuthenticated(ctx, out _, out var denied))
@@ -471,6 +497,9 @@ public static class NyaChatEndpoints
             return Results.Ok(ApiResponseHelper.Success(new
             {
                 soul_id      = soul.SoulId,
+                bound_users = nyaDb.Db.Query<NyaSoulBinding>(
+                    "SELECT * FROM nya_soul_bindings WHERE soul_id = @soulId COLLATE NOCASE ORDER BY user_id",
+                    new { soulId }).Select(b => b.UserId),
                 display_name = soul.DisplayName,
                 personality  = new
                 {
@@ -575,12 +604,37 @@ public static class NyaChatEndpoints
                 return Results.BadRequest(ApiResponseHelper.Error($"Soul '{soulId}' not found. Available: {string.Join(", ", available)}"));
 
             memoryService.SetSoulBinding(userId, soulId);
-            auditLogger.LogSoulChange("soul_bind", soulId);
+            auditLogger.LogSoulChange("soul_bind", soulId, userId);
 
             return Results.Ok(ApiResponseHelper.Success(new { user_id = userId, soul_id = soulId }));
         });
 
         // ── 訊息記錄 ────────────────────────────────────────────────────────
+        nya.MapDelete("/users/{userId}/soul", (
+            HttpContext ctx,
+            LocalAdminAuthService auth,
+            NyaMemoryService memoryService,
+            NyaSoulProvider soulProvider,
+            NyaAuditLogger auditLogger,
+            string userId) =>
+        {
+            if (!auth.TryRequirePermission(ctx, LocalAdminPermissions.PermissionUserManage, out _, out var denied))
+                return denied;
+
+            var previous = memoryService.GetSoulBinding(userId);
+            var removed = memoryService.RemoveSoulBinding(userId);
+            auditLogger.LogSoulChange("soul_unbind", previous, userId);
+            var resolved = soulProvider.ResolveSoul(userId);
+            return Results.Ok(ApiResponseHelper.Success(new
+            {
+                user_id = userId,
+                removed,
+                bound_soul_id = resolved.BoundSoulId,
+                effective_soul_id = resolved.Soul.SoulId,
+                soul_reason = resolved.Reason
+            }));
+        });
+
         nya.MapGet("/users/{userId}/messages", (
             HttpContext ctx,
             LocalAdminAuthService auth,
@@ -848,7 +902,8 @@ public static class NyaChatEndpoints
             if (!auth.TryRequireAuthenticated(ctx, out _, out var denied))
                 return denied;
 
-            var facts = memoryService.GetActiveFacts(userId);
+            var facts = memoryService.GetCurrentFacts(userId);
+            var now = DateTime.UtcNow;
             return Results.Ok(ApiResponseHelper.Success(new
             {
                 user_id = userId,
@@ -862,6 +917,9 @@ public static class NyaChatEndpoints
                     confidence        = f.Confidence,
                     version           = f.Version,
                     source_message_id = f.SourceMessageId,
+                    source_text       = f.SourceText,
+                    expires_at        = f.ExpiresAt == null ? null : DateTime.SpecifyKind(f.ExpiresAt.Value, DateTimeKind.Utc).ToString("O"),
+                    is_expired        = f.ExpiresAt != null && f.ExpiresAt <= now,
                     created_at        = f.CreatedAt
                 })
             }));
@@ -888,6 +946,8 @@ public static class NyaChatEndpoints
                     fact_id       = f.FactId,
                     category      = f.Category,
                     fact_value    = f.FactValue,
+                    source_text   = f.SourceText,
+                    expires_at    = f.ExpiresAt == null ? null : DateTime.SpecifyKind(f.ExpiresAt.Value, DateTimeKind.Utc).ToString("O"),
                     confidence    = f.Confidence,
                     version       = f.Version,
                     is_active     = f.IsActive,
@@ -895,6 +955,48 @@ public static class NyaChatEndpoints
                     superseded_at = f.SupersededAt
                 })
             }));
+        });
+
+        nya.MapGet("/users/{userId}/forgotten", (
+            HttpContext ctx,
+            LocalAdminAuthService auth,
+            NyaMemoryService memoryService,
+            string userId) =>
+        {
+            if (!auth.TryRequireAuthenticated(ctx, out _, out var denied))
+                return denied;
+
+            var forgotten = memoryService.GetForgotten(userId);
+            return Results.Ok(ApiResponseHelper.Success(new
+            {
+                user_id = userId,
+                total = forgotten.Count,
+                forgotten = forgotten.Select(f => new
+                {
+                    fact_key = f.FactKey,
+                    fact_value = f.FactValue,
+                    created_at = f.CreatedAt
+                })
+            }));
+        });
+
+        nya.MapDelete("/users/{userId}/forgotten/{factKey}", (
+            HttpContext ctx,
+            LocalAdminAuthService auth,
+            NyaMemoryService memoryService,
+            NyaAuditLogger auditLogger,
+            string userId,
+            string factKey) =>
+        {
+            if (!auth.TryRequireAuthenticated(ctx, out _, out var denied))
+                return denied;
+
+            var deleted = memoryService.ClearForgotten(userId, factKey);
+            if (deleted == 0)
+                return Results.NotFound(ApiResponseHelper.Error("Forgotten record not found.", 404));
+
+            auditLogger.LogMemoryDelete(userId, "forgotten", factKey);
+            return Results.Ok(ApiResponseHelper.Success(new { user_id = userId, fact_key = factKey, deleted }));
         });
 
         nya.MapPost("/users/{userId}/facts/{factKey}/rollback", (
@@ -996,6 +1098,7 @@ public static class NyaChatEndpoints
                 user_id = userId,
                 total = history.Count,
                 trigger_count = triggerCount,
+                auto_summarize_enabled = configStore.Current.AutoSummarizeEnabled,
                 topic_active = topicActive,
                 summaries = history.Select(s => new
                 {
@@ -1020,6 +1123,7 @@ public static class NyaChatEndpoints
             LocalAdminAuthService auth,
             NyaSummarizer summarizer,
             NyaMemoryService memoryService,
+            INyaConfigStore<NyaChatConfig> configStore,
             string userId) =>
         {
             if (!auth.TryRequireAuthenticated(ctx, out _, out var denied))
@@ -1027,6 +1131,15 @@ public static class NyaChatEndpoints
 
             // 大項#3：摘要依話題獨立——對使用者當前 active 話題觸發摘要。
             // 手動「立即摘要」用 force=true 略過自動觸發門檻（否則切換/新開話題後 active 話題訊息常不足而無作用）。
+            if (!configStore.Current.AutoSummarizeEnabled)
+                return Results.Ok(ApiResponseHelper.Success(new
+                {
+                    user_id = userId,
+                    triggered = false,
+                    status = "Disabled",
+                    message = "自動摘要已關閉；現有摘要不會用於聊天。"
+                }));
+
             var topicId = memoryService.GetOrCreateActiveTopic(userId);
             var outcome = await summarizer.TrySummarizeAsync(userId, topicId, force: true);
 
@@ -1124,6 +1237,7 @@ public static class NyaChatEndpoints
             {
                 user_id = userId,
                 total,
+                write_failure_count = auditLogger.WriteFailureCount,
                 limit,
                 offset,
                 keyword = string.IsNullOrWhiteSpace(keyword) ? null : keyword,
@@ -1259,6 +1373,8 @@ public static class NyaChatEndpoints
             var msgs = memoryService.DeleteAllMessages(userId);
             var facts = memoryService.DeleteAllFacts(userId);
             var summaries = memoryService.DeleteAllSummaries(userId);
+            var topics = memoryService.DeleteAllTopics(userId);
+            var forgotten = memoryService.ClearForgotten(userId);
             auditLogger.LogMemoryDelete(userId, "all");
 
             return Results.Ok(ApiResponseHelper.Success(new
@@ -1266,7 +1382,9 @@ public static class NyaChatEndpoints
                 user_id = userId,
                 soft_deleted_messages = msgs,
                 deleted_facts = facts,
-                deleted_summaries = summaries
+                deleted_summaries = summaries,
+                deleted_topics = topics,
+                cleared_forgotten = forgotten
             }));
         });
 
@@ -1294,192 +1412,154 @@ public static class NyaChatEndpoints
             return Results.Ok(ApiResponseHelper.Success(NyaLlmProviderTemplates.All));
         });
 
-        // GET /llm/call-sites：列出所有可路由的 call-site id（3 個內建 + 每個工具一個）。
-        nya.MapGet("/llm/call-sites", (
-            HttpContext ctx,
-            LocalAdminAuthService auth,
-            NyaToolRegistry toolRegistry) =>
+        nya.MapGet("/llm/call-sites", (HttpContext ctx, LocalAdminAuthService auth) =>
         {
-            if (!auth.TryRequireAuthenticated(ctx, out _, out var denied))
-                return denied;
-
-            var builtIns = new[] { "chat", "fact_extraction", "summarization" };
-            var toolSites = toolRegistry.GetAllWithStatus().Select(t => "tool:" + t.Schema.Name);
-            var callSites = builtIns.Concat(toolSites).ToList();
-
-            return Results.Ok(ApiResponseHelper.Success(new { call_sites = callSites }));
+            if (!auth.TryRequireAuthenticated(ctx, out _, out var denied)) return denied;
+            return Results.Ok(ApiResponseHelper.Success(new { call_sites = NyaLlmAdminSettings.CallSites }));
         });
 
-        // GET /llm/profiles：列出所有 profile（api_key 遮罩，絕不回傳明文或密文）。
-        nya.MapGet("/llm/profiles", (
-            HttpContext ctx,
-            LocalAdminAuthService auth,
-            NyaLlmProfileStore store) =>
+        nya.MapGet("/llm/profiles", (HttpContext ctx, LocalAdminAuthService auth, NyaLlmProfileStore store) =>
         {
-            if (!auth.TryRequireAuthenticated(ctx, out _, out var denied))
-                return denied;
-
+            if (!auth.TryRequireAuthenticated(ctx, out _, out var denied)) return denied;
+            var routes = store.ListRoutes();
             var profiles = store.ListProfiles().Select(e => new
             {
-                profile_id  = e.ProfileId,
-                provider    = e.Provider,
-                base_url    = e.BaseUrl,
-                api_key     = NyaSecretMask.Mask(e.ApiKey),
-                model       = e.Model,
-                template    = e.Template,
-                params_json = e.ParamsJson
+                profile_id = e.ProfileId, provider = e.Provider, base_url = e.BaseUrl,
+                api_key = NyaSecretMask.Mask(e.ApiKey), model = e.Model, template = e.Template, params_json = e.ParamsJson,
+                call_sites = NyaLlmAdminSettings.CallSites.Where(cs =>
+                    (routes.FirstOrDefault(r => r.CallSiteId == cs) ?? routes.FirstOrDefault(r => r.CallSiteId == NyaLlmProfileStore.DefaultCallSite))?.ProfileId == e.ProfileId).ToArray(),
+                effective = NyaLlmAdminSettings.Effective(e.ToProfile())
             });
-
             return Results.Ok(ApiResponseHelper.Success(profiles));
         });
 
-        // POST /llm/profiles：新增或更新 profile（body: profile_id, provider, base_url, api_key, model, template, params_json）。
-        // api_key 為空/含 * 時保留既存解密 key（重新加密存入，不雙重加密）。
-        nya.MapPost("/llm/profiles", (
-            HttpContext ctx,
-            LocalAdminAuthService auth,
-            NyaLlmProfileStore store,
-            NyaAuditLogger auditLogger) =>
+        static IResult SaveProfile(HttpContext ctx, LocalAdminAuthService auth, NyaLlmProfileStore store,
+            IEnumerable<INyaLlmProvider> providers, NyaAuditLogger auditLogger, string? id)
         {
-            if (!auth.TryRequireAuthenticated(ctx, out _, out var denied))
-                return denied;
-
+            if (!auth.TryRequireAuthenticated(ctx, out _, out var denied)) return denied;
             var body = RequestBodyHelper.GetBody(ctx);
-            if (!RequestBodyHelper.TryGetRequired(body, "profile_id", out var profileId, out var e1)) return e1!;
-
-            var provider  = body.TryGetProperty("provider",    out var pv) && pv.ValueKind == JsonValueKind.String ? pv.GetString() ?? "" : "";
-            var baseUrl   = body.TryGetProperty("base_url",    out var bu) && bu.ValueKind == JsonValueKind.String ? bu.GetString() ?? "" : "";
-            var incomingKey = body.TryGetProperty("api_key",   out var ak) && ak.ValueKind == JsonValueKind.String ? ak.GetString() ?? "" : "";
-            var model     = body.TryGetProperty("model",       out var mo) && mo.ValueKind == JsonValueKind.String ? mo.GetString() ?? "" : "";
-            var template  = body.TryGetProperty("template",    out var tp) && tp.ValueKind == JsonValueKind.String ? tp.GetString() ?? "" : "";
-            var paramsJson = body.TryGetProperty("params_json", out var pj) && pj.ValueKind == JsonValueKind.String ? pj.GetString() ?? "{}" : "{}";
-
-            // 若 api_key 空白或含 '*'（遮罩形式），保留既存解密 key（GetProfile 回傳明文）。
-            string resolvedKey;
-            if (string.IsNullOrWhiteSpace(incomingKey) || incomingKey.Contains('*'))
-                resolvedKey = store.GetProfile(profileId)?.ApiKey ?? "";
-            else
-                resolvedKey = incomingKey;
-
+            if (body.ValueKind != JsonValueKind.Object) return Results.BadRequest(ApiResponseHelper.Error("Profile 必須是 JSON object。"));
+            var creating = id == null;
+            if (creating)
+            {
+                if (!RequestBodyHelper.TryGetRequired(body, "profile_id", out var profileId, out var error)) return error!;
+                id = profileId;
+            }
+            var existing = store.GetProfile(id!);
+            if (creating && existing != null) return Results.Conflict(ApiResponseHelper.Error("Profile ID 已存在。", 409));
+            if (!creating && existing == null) return Results.NotFound(ApiResponseHelper.Error("Profile 不存在。", 404));
+            foreach (var field in new[] { "provider", "base_url", "api_key", "model", "template", "params_json" })
+                if (body.TryGetProperty(field, out var value) && value.ValueKind != JsonValueKind.String)
+                    return Results.BadRequest(ApiResponseHelper.Error(field + " 必須是字串。"));
+            string Read(string key, string fallback = "") => body.TryGetProperty(key, out var value) ? value.GetString() ?? fallback : fallback;
             var entry = new NyaLlmProfileEntry
             {
-                ProfileId   = profileId,
-                Provider    = provider,
-                BaseUrl     = baseUrl,
-                ApiKey      = resolvedKey,
-                Model       = model,
-                Template    = template,
-                ParamsJson  = string.IsNullOrWhiteSpace(paramsJson) ? "{}" : paramsJson
+                ProfileId = id!, Provider = Read("provider").Trim().ToLowerInvariant(), BaseUrl = Read("base_url").Trim(),
+                ApiKey = Read("api_key"), Model = Read("model").Trim(), Template = Read("template"), ParamsJson = Read("params_json", "{}")
             };
-            store.UpsertProfile(entry);
-            auditLogger.LogLlmProfileUpsert(profileId, provider, model);
-
-            return Results.Ok(ApiResponseHelper.Success(new { profile_id = profileId }));
-        });
-
-        // PUT /llm/profiles/{id}：同 POST 但 profile_id 取自路徑參數（路徑 id 優先）。
-        nya.MapPut("/llm/profiles/{id}", (
-            HttpContext ctx,
-            LocalAdminAuthService auth,
-            NyaLlmProfileStore store,
-            NyaAuditLogger auditLogger,
-            string id) =>
-        {
-            if (!auth.TryRequireAuthenticated(ctx, out _, out var denied))
-                return denied;
-
-            var body = RequestBodyHelper.GetBody(ctx);
-            var provider   = body.TryGetProperty("provider",    out var pv) && pv.ValueKind == JsonValueKind.String ? pv.GetString() ?? "" : "";
-            var baseUrl    = body.TryGetProperty("base_url",    out var bu) && bu.ValueKind == JsonValueKind.String ? bu.GetString() ?? "" : "";
-            var incomingKey = body.TryGetProperty("api_key",    out var ak) && ak.ValueKind == JsonValueKind.String ? ak.GetString() ?? "" : "";
-            var model      = body.TryGetProperty("model",       out var mo) && mo.ValueKind == JsonValueKind.String ? mo.GetString() ?? "" : "";
-            var template   = body.TryGetProperty("template",    out var tp) && tp.ValueKind == JsonValueKind.String ? tp.GetString() ?? "" : "";
-            var paramsJson = body.TryGetProperty("params_json", out var pj) && pj.ValueKind == JsonValueKind.String ? pj.GetString() ?? "{}" : "{}";
-
-            // 若 api_key 空白或含 '*'（遮罩形式），保留既存解密 key。
-            string resolvedKey;
-            if (string.IsNullOrWhiteSpace(incomingKey) || incomingKey.Contains('*'))
-                resolvedKey = store.GetProfile(id)?.ApiKey ?? "";
-            else
-                resolvedKey = incomingKey;
-
-            var entry = new NyaLlmProfileEntry
+            var validation = NyaLlmAdminSettings.Validate(entry, providers);
+            if (validation != null) return Results.BadRequest(ApiResponseHelper.Error(validation));
+            if (creating)
             {
-                ProfileId  = id,
-                Provider   = provider,
-                BaseUrl    = baseUrl,
-                ApiKey     = resolvedKey,
-                Model      = model,
-                Template   = template,
-                ParamsJson = string.IsNullOrWhiteSpace(paramsJson) ? "{}" : paramsJson
-            };
-            store.UpsertProfile(entry);
-            auditLogger.LogLlmProfileUpsert(id, provider, model);
+                if (entry.ApiKey.Contains('*')) return Results.BadRequest(ApiResponseHelper.Error("新增 Profile 不可使用遮罩金鑰。"));
+                if (!store.TryCreateProfile(entry)) return Results.Conflict(ApiResponseHelper.Error("Profile ID 已存在。", 409));
+            }
+            else if (!store.TryUpdateProfile(entry)) return Results.NotFound(ApiResponseHelper.Error("Profile 不存在。", 404));
+            auditLogger.LogLlmProfileUpsert(entry.ProfileId, entry.Provider, entry.Model);
+            return Results.Ok(ApiResponseHelper.Success(new { profile_id = entry.ProfileId }));
+        }
 
-            return Results.Ok(ApiResponseHelper.Success(new { profile_id = id }));
+        nya.MapPost("/llm/profiles", (HttpContext ctx, LocalAdminAuthService auth, NyaLlmProfileStore store,
+            IEnumerable<INyaLlmProvider> providers, NyaAuditLogger auditLogger) => SaveProfile(ctx, auth, store, providers, auditLogger, null));
+        nya.MapPut("/llm/profiles/{id}", (HttpContext ctx, LocalAdminAuthService auth, NyaLlmProfileStore store,
+            IEnumerable<INyaLlmProvider> providers, NyaAuditLogger auditLogger, string id) => SaveProfile(ctx, auth, store, providers, auditLogger, id));
+
+        nya.MapGet("/llm/profiles/{id}/effective", (HttpContext ctx, LocalAdminAuthService auth, NyaLlmProfileStore store, string id) =>
+        {
+            if (!auth.TryRequireAuthenticated(ctx, out _, out var denied)) return denied;
+            var entry = store.GetProfile(id);
+            return entry == null ? Results.NotFound(ApiResponseHelper.Error("Profile 不存在。", 404))
+                : Results.Ok(ApiResponseHelper.Success(NyaLlmAdminSettings.Effective(entry.ToProfile())));
         });
 
-        // DELETE /llm/profiles/{id}：刪除 profile。
-        nya.MapDelete("/llm/profiles/{id}", (
-            HttpContext ctx,
-            LocalAdminAuthService auth,
-            NyaLlmProfileStore store,
-            NyaAuditLogger auditLogger,
-            string id) =>
+        nya.MapPost("/llm/profiles/{id}/test", async (HttpContext ctx, LocalAdminAuthService auth, NyaLlmProfileStore store,
+            IEnumerable<INyaLlmProvider> providers, string id) =>
         {
-            if (!auth.TryRequireAuthenticated(ctx, out _, out var denied))
-                return denied;
+            if (!auth.TryRequireAuthenticated(ctx, out _, out var denied)) return denied;
+            var entry = store.GetProfile(id);
+            if (entry == null) return Results.NotFound(ApiResponseHelper.Error("Profile 不存在。", 404));
+            var validation = NyaLlmAdminSettings.Validate(entry, providers);
+            if (validation != null) return Results.BadRequest(ApiResponseHelper.Error(validation));
+            var profile = entry.ToProfile();
+            var provider = providers.First(p => p.Key.Equals(profile.Provider, StringComparison.OrdinalIgnoreCase));
+            var watch = System.Diagnostics.Stopwatch.StartNew();
+            string? error = null;
+            try
+            {
+                using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ctx.RequestAborted);
+                timeout.CancelAfter(TimeSpan.FromSeconds(Math.Min(30, profile.TimeoutSeconds)));
+                var response = await provider.SendAsync(new NyaLlmProviderRequest
+                {
+                    Profile = profile,
+                    Request = new NyaLlmRequest
+                    {
+                        Model = profile.Model, Temperature = profile.Temperature, TopP = profile.TopP, MaxTokens = 32,
+                        Messages = new() { new NyaLlmMessage { Role = "user", Content = "Reply OK." } }
+                    }
+                }, timeout.Token);
+                if (response == null) error = "Provider 未返回有效回應，請檢查完整 API 端點、模型與金鑰。";
+                else if (string.IsNullOrWhiteSpace(response.Content)) error = "模型回覆為空；思考模型可能需要調整思考設定。";
+            }
+            catch (OperationCanceledException) { error = "連線測試逾時或已取消（最長 30 秒）。"; }
+            catch (HttpRequestException ex) { error = "HTTP 連線失敗" + (ex.StatusCode.HasValue ? "：" + (int)ex.StatusCode.Value : "，請檢查模型伺服器。"); }
+            catch (Exception) { error = "Provider 測試失敗，請檢查模型伺服器回應與設定。"; }
+            return Results.Ok(ApiResponseHelper.Success(new { ok = error == null, latency_ms = watch.ElapsedMilliseconds, error }));
+        });
 
+        nya.MapDelete("/llm/profiles/{id}", (HttpContext ctx, LocalAdminAuthService auth,
+            NyaLlmProfileStore store, NyaAuditLogger auditLogger, string id) =>
+        {
+            if (!auth.TryRequireAuthenticated(ctx, out _, out var denied)) return denied;
             bool ok;
             try { ok = store.DeleteProfile(id); }
-            catch (InvalidOperationException ex)
+            catch (InvalidOperationException ex) { return Results.Conflict(ApiResponseHelper.Error(ex.Message, 409)); }
+            if (ok) auditLogger.LogLlmProfileDelete(id);
+            return ok ? Results.Ok(ApiResponseHelper.Success(new { deleted = id })) : Results.NotFound(ApiResponseHelper.Error("not found", 404));
+        });
+
+        nya.MapGet("/llm/routes", (HttpContext ctx, LocalAdminAuthService auth, NyaLlmProfileStore store) =>
+        {
+            if (!auth.TryRequireAuthenticated(ctx, out _, out var denied)) return denied;
+            var routes = store.ListRoutes();
+            var effective = NyaLlmAdminSettings.CallSites.Select(cs =>
             {
-                return Results.Json(ApiResponseHelper.Error(ex.Message, 409), statusCode: 409);
-            }
-            if (ok)
-                auditLogger.LogLlmProfileDelete(id);
-            return ok
-                ? Results.Ok(ApiResponseHelper.Success(new { deleted = id }))
-                : Results.NotFound(ApiResponseHelper.Error("not found"));
+                var direct = routes.FirstOrDefault(r => r.CallSiteId == cs);
+                var resolved = direct ?? routes.FirstOrDefault(r => r.CallSiteId == NyaLlmProfileStore.DefaultCallSite);
+                var profile = resolved == null ? null : store.GetProfile(resolved.ProfileId);
+                return new
+                {
+                    call_site_id = cs, profile_id = direct?.ProfileId,
+                    effective_profile_id = profile?.ProfileId, provider = profile?.Provider, model = profile?.Model,
+                    source = direct == null ? NyaLlmProfileStore.DefaultCallSite : cs
+                };
+            });
+            return Results.Ok(ApiResponseHelper.Success(effective));
         });
 
-        // GET /llm/routes：列出所有 call-site → profile 路由。
-        nya.MapGet("/llm/routes", (
-            HttpContext ctx,
-            LocalAdminAuthService auth,
-            NyaLlmProfileStore store) =>
+        nya.MapPut("/llm/routes", (HttpContext ctx, LocalAdminAuthService auth, NyaLlmProfileStore store, NyaAuditLogger auditLogger) =>
         {
-            if (!auth.TryRequireAuthenticated(ctx, out _, out var denied))
-                return denied;
-
-            var routes = store.ListRoutes().Select(r => new { call_site_id = r.CallSiteId, profile_id = r.ProfileId });
-            return Results.Ok(ApiResponseHelper.Success(routes));
-        });
-
-        // PUT /llm/routes：設定 call-site → profile 路由（body: call_site_id, profile_id）。
-        nya.MapPut("/llm/routes", (
-            HttpContext ctx,
-            LocalAdminAuthService auth,
-            NyaLlmProfileStore store,
-            NyaAuditLogger auditLogger) =>
-        {
-            if (!auth.TryRequireAuthenticated(ctx, out _, out var denied))
-                return denied;
-
+            if (!auth.TryRequireAuthenticated(ctx, out _, out var denied)) return denied;
             var body = RequestBodyHelper.GetBody(ctx);
+            if (body.ValueKind != JsonValueKind.Object) return Results.BadRequest(ApiResponseHelper.Error("路由必須是 JSON object。"));
             if (!RequestBodyHelper.TryGetRequired(body, "call_site_id", out var callSiteId, out var e1)) return e1!;
-            if (!RequestBodyHelper.TryGetRequired(body, "profile_id",   out var profileId,  out var e2)) return e2!;
-
-            // UI「（預設）」送 "__default__" = 移除專屬路由、回落預設；不可當 profile 寫入（解析必敗）。
+            if (!RequestBodyHelper.TryGetRequired(body, "profile_id", out var profileId, out var e2)) return e2!;
+            if (!NyaLlmAdminSettings.CallSites.Contains(callSiteId)) return Results.BadRequest(ApiResponseHelper.Error("未知 LLM 呼叫點：" + callSiteId));
             try
             {
                 if (profileId == NyaLlmProfileStore.DefaultCallSite) store.ClearRoute(callSiteId);
                 else store.SetRoute(callSiteId, profileId);
             }
-            catch (InvalidOperationException ex)
-            {
-                return Results.BadRequest(ApiResponseHelper.Error(ex.Message, 400));
-            }
+            catch (InvalidOperationException ex) { return Results.BadRequest(ApiResponseHelper.Error(ex.Message, 400)); }
             auditLogger.LogLlmRouteSet(callSiteId, profileId);
             return Results.Ok(ApiResponseHelper.Success(new { call_site_id = callSiteId, profile_id = profileId }));
         });
@@ -1506,7 +1586,8 @@ public static class NyaChatEndpoints
         var profiles = segments is ["llm", "profiles"] or ["llm", "profiles", _];
         if ((verb == HttpMethods.Delete && audit) ||
             ((verb is "POST" or "PUT" or "DELETE") && profiles) ||
-            (verb == HttpMethods.Put && segments is ["llm", "routes"]))
+            (verb == HttpMethods.Put && segments is ["llm", "routes"]) ||
+            (verb == HttpMethods.Post && segments is ["llm", "profiles", _, "test"]))
         {
             superAdminOnly = true;
             return true;
@@ -1517,22 +1598,24 @@ public static class NyaChatEndpoints
             if (segments is ["audit"] or ["users", _, "audit"])
                 permissions = new[] { LocalAdminPermissions.AuditRead };
             else if (segments is ["users"] or
-                     ["users", _, "overview" or "messages" or "topics" or "facts" or "summaries"] or
+                     ["users", _, "overview" or "messages" or "topics" or "facts" or "summaries" or "forgotten"] or
                      ["users", _, "messages", _] or
                      ["users", _, "facts", _, "history"])
                 permissions = new[] { LocalAdminPermissions.PermissionUserManage, LocalAdminPermissions.AuditRead };
-            else if (segments is ["status" or "config" or "prompts" or "tools" or "souls"] or ["souls", _])
+            else if (segments is ["status" or "config" or "prompts" or "tools" or "souls"] or ["souls", _] or ["config", "effective"])
                 permissions = new[] { LocalAdminPermissions.SystemStatusRead, LocalAdminPermissions.AuditRead };
-            else if (segments is ["llm", "param-catalog" or "templates" or "call-sites" or "profiles" or "routes"])
+            else if (segments is ["llm", "param-catalog" or "templates" or "call-sites" or "profiles" or "routes"] or ["llm", "profiles", _, "effective"])
                 permissions = new[] { LocalAdminPermissions.SystemStatusRead };
         }
         else if ((verb == HttpMethods.Put && segments is ["config"] or ["souls", _]) ||
+                 (verb == HttpMethods.Patch && segments is ["config"]) ||
+                 (verb == HttpMethods.Post && segments is ["config", "reset"]) ||
                  (verb == HttpMethods.Post && segments is ["prompts", "reload"] or ["tools", _, "toggle"] or ["souls"] or ["souls", "reload"]) ||
                  (verb == HttpMethods.Delete && segments is ["souls", _]))
         {
             permissions = new[] { LocalAdminPermissions.SystemWorkerManage };
         }
-        else if ((verb == HttpMethods.Delete && segments is ["users", _]) ||
+        else if ((verb == HttpMethods.Delete && segments is ["users", _] or ["users", _, "soul"] or ["users", _, "forgotten", _]) ||
                  ((verb is "POST" or "PUT" or "DELETE") && segments is
                      ["users", _, "facts" or "messages" or "topics" or "summaries" or "soul"] or
                      ["users", _, "facts" or "messages" or "topics", _] or

@@ -97,6 +97,44 @@ public class NyaFact
     /// <summary>被新版本覆蓋的時間（null = 仍在生效）</summary>
     [Column("superseded_at")]
     public DateTime? SupersededAt { get; set; }
+
+    /// <summary>使用者的原話（記下這則筆記的依據）</summary>
+    [Column("source_text")]
+    public string? SourceText { get; set; }
+
+    /// <summary>有效期限（null = 長期有效）；過期後不再注入</summary>
+    [Column("expires_at")]
+    public DateTime? ExpiresAt { get; set; }
+}
+
+// ─── nya_forgotten ────────────────────────────────────────────────────────────
+/// <summary>使用者要求遺忘的事項：遺忘後不再注入、不再從搜尋帶回，直到使用者重新明確告知。</summary>
+[Table("nya_forgotten")]
+public class NyaForgotten
+{
+    [Key(AutoIncrement = false)]
+    [Column("forget_id")]
+    public string ForgetId { get; set; } = "";
+
+    [Column("user_id")]
+    public string UserId { get; set; } = "";
+
+    [Column("fact_key")]
+    public string FactKey { get; set; } = "";
+
+    [Column("fact_value")]
+    public string FactValue { get; set; } = "";
+
+    /// <summary>用來比對舊訊息的字串（各版本內容與使用者原話，JSON 陣列）</summary>
+    [Column("match_terms")]
+    public string? MatchTermsJson { get; set; }
+
+    /// <summary>遺忘涵蓋到的訊息序號（含說出遺忘要求的那一輪）；0 表示改用時間判斷</summary>
+    [Column("through_sequence")]
+    public long ThroughSequence { get; set; }
+
+    [Column("created_at")]
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 }
 
 // ─── nya_summaries ────────────────────────────────────────────────────────────

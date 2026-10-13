@@ -135,17 +135,17 @@ public class NyaToolRegistry
     /// <summary>所有已註冊工具 schema（暴露面用；不過濾啟用/授權）。</summary>
     public IReadOnlyList<NyaToolSchema> GetAllSchemas() => _allSchemas;
 
-    /// <summary>
-    /// item 7：暴露閘默認放行（不拆閘，保留 seam，可日後收緊）。
-    /// 理由：隱藏關閉/越權工具會讓 LLM 誤答「我沒有這功能」並寫進記憶；改為全暴露，
-    /// 真正把關在執行門 <see cref="TryGetExecutablePlugin"/>（回結構化狀態）。
-    /// </summary>
-    private static bool IsExposedToLlm(NyaToolSchema schema) => true;
-
-    /// <summary>建構暴露給 LLM 的工具清單：全暴露（啟用/授權的把關移至執行門）。</summary>
+    /// <summary>暴露給 LLM 的工具清單：只放此使用者目前可用（已啟用 ∩ 已授權）的工具。</summary>
     public List<NyaLlmTool> BuildLlmTools(string userId, string channelType)
-        => _allSchemas.Where(IsExposedToLlm)
+        => GetUsableSchemas(userId, channelType)
             .Select(NyaToolSchemaMapper.ToLlmTool)
+            .ToList();
+
+    /// <summary>此使用者目前不可用的工具與原因（disabled / not_authorized），供能力說明據實告知。</summary>
+    public IReadOnlyList<(NyaToolSchema Schema, string Reason)> GetUnavailableSchemas(string userId, string channelType)
+        => _allSchemas
+            .Where(s => !IsEnabled(s) || !_authorizer.CanUse(userId, channelType, s))
+            .Select(s => (s, IsEnabled(s) ? "not_authorized" : "disabled"))
             .ToList();
 
     // ── 執行期查找 ───────────────────────────────────────────────────────────

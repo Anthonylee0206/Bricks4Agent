@@ -51,15 +51,9 @@ public sealed class AnthropicProvider : INyaLlmProvider
     public static JsonObject BuildBody(NyaLlmProviderRequest pr)
     {
         var request = pr.Request;
-        var body = new JsonObject
-        {
-            ["model"]       = request.Model,
-            ["max_tokens"]  = request.MaxTokens ?? DefaultMaxTokens,
-            ["temperature"] = request.Temperature,
-            ["top_p"]       = request.TopP
-        };
-
-        NyaLlmSerialization.ApplyModelOverrides(body, pr.Profile); // 與 OpenAiChatProvider 一致：profile 的取樣覆寫寫入 body 頂層
+        var body = NyaLlmAdminSettings.Sampling(pr.Profile, request);
+        body["model"] = request.Model;
+        body["max_tokens"] = request.MaxTokens ?? DefaultMaxTokens;
         // 註：Anthropic 的 extended-thinking 形狀與共用 ApplyThinkingParams（enable_thinking/thinking_budget 扁平）不同，故此處刻意不套用；如需 thinking 另以 Anthropic 專屬 block 實作（後續）。
 
         var sys = string.Join("\n", request.Messages.Where(m => m.Role == "system").Select(m => m.Content));

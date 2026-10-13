@@ -14,6 +14,30 @@ public sealed class NyaLlmProfileStore
     private readonly BrokerDb _db;
     private readonly ILogger<NyaLlmProfileStore> _logger;
     private readonly INyaSecretProtector? _protector;
+    private readonly object _gate = new();
+
+    public bool TryCreateProfile(NyaLlmProfileEntry entry)
+    {
+        lock (_gate)
+        {
+            if (_db.Get<NyaLlmProfileEntry>(entry.ProfileId) != null) return false;
+            UpsertProfile(entry);
+            return true;
+        }
+    }
+
+    public bool TryUpdateProfile(NyaLlmProfileEntry entry)
+    {
+        lock (_gate)
+        {
+            var existing = GetProfile(entry.ProfileId);
+            if (existing == null) return false;
+            entry.CreatedAt = existing.CreatedAt;
+            if (string.IsNullOrWhiteSpace(entry.ApiKey) || entry.ApiKey.Contains('*')) entry.ApiKey = existing.ApiKey;
+            UpsertProfile(entry);
+            return true;
+        }
+    }
 
     public NyaLlmProfileStore(BrokerDb db, ILogger<NyaLlmProfileStore> logger, INyaSecretProtector? protector = null)
     {
@@ -27,17 +51,20 @@ public sealed class NyaLlmProfileStore
     // ── profile CRUD ─────────────────────────────────────────────────────────
     public void UpsertProfile(NyaLlmProfileEntry entry)
     {
-        entry.UpdatedAt = DateTime.UtcNow;
-        // 加密寫入「副本」，不就地改 caller 的 entry.ApiKey（避免 caller 事後讀到密文的 least-surprise 地雷）。
-        var toStore = _protector == null ? entry : Encrypted(entry);
-        var inserted = _db.Get<NyaLlmProfileEntry>(toStore.ProfileId) == null;
-        if (inserted)
-            _db.Insert(toStore);
-        else
-            _db.Update(toStore);
-        // 應用程式 log（#4）：profile 異動留痕。絕不記 api_key——只記非敏感欄位。
-        _logger.LogInformation("[NyaLlmProfileStore] Profile {Op}: id={ProfileId} provider={Provider} model={Model}",
-            inserted ? "inserted" : "updated", entry.ProfileId, entry.Provider, entry.Model);
+        lock (_gate)
+        {
+            entry.UpdatedAt = DateTime.UtcNow;
+            // 加密寫入「副本」，不就地改 caller 的 entry.ApiKey（避免 caller 事後讀到密文的 least-surprise 地雷）。
+            var toStore = _protector == null ? entry : Encrypted(entry);
+            var inserted = _db.Get<NyaLlmProfileEntry>(toStore.ProfileId) == null;
+            if (inserted)
+                _db.Insert(toStore);
+            else
+                _db.Update(toStore);
+            // 應用程式 log（#4）：profile 異動留痕。絕不記 api_key——只記非敏感欄位。
+            _logger.LogInformation("[NyaLlmProfileStore] Profile {Op}: id={ProfileId} provider={Provider} model={Model}",
+                inserted ? "inserted" : "updated", entry.ProfileId, entry.Provider, entry.Model);
+        }
     }
 
     public NyaLlmProfileEntry? GetProfile(string profileId)
@@ -55,38 +82,47 @@ public sealed class NyaLlmProfileStore
     /// </summary>
     public bool DeleteProfile(string profileId)
     {
-        if (_db.Get<NyaLlmRoute>(DefaultCallSite)?.ProfileId == profileId)
-            throw new InvalidOperationException($"Profile「{profileId}」為系統預設使用中，無法刪除。");
+        lock (_gate)
+        {
+            if (_db.Get<NyaLlmRoute>(DefaultCallSite)?.ProfileId == profileId)
+                throw new InvalidOperationException($"Profile「{profileId}」為系統預設使用中，無法刪除。");
 
-        var deleted = _db.Execute("DELETE FROM nya_llm_profiles WHERE profile_id = @id", new { id = profileId }) > 0;
-        if (deleted)
-            _db.Execute("DELETE FROM nya_llm_routes WHERE profile_id = @id", new { id = profileId });
-        _logger.LogInformation("[NyaLlmProfileStore] Profile delete: id={ProfileId} deleted={Deleted}", profileId, deleted);
-        return deleted;
+            var deleted = _db.Execute("DELETE FROM nya_llm_profiles WHERE profile_id = @id", new { id = profileId }) > 0;
+            if (deleted)
+                _db.Execute("DELETE FROM nya_llm_routes WHERE profile_id = @id", new { id = profileId });
+            _logger.LogInformation("[NyaLlmProfileStore] Profile delete: id={ProfileId} deleted={Deleted}", profileId, deleted);
+            return deleted;
+        }
     }
 
     // ── route ────────────────────────────────────────────────────────────────
     /// <summary>設定路由；profile 不存在則拋 InvalidOperationException（避免寫出解析必敗的懸空路由）。</summary>
     public void SetRoute(string callSiteId, string profileId)
     {
-        if (_db.Get<NyaLlmProfileEntry>(profileId) == null)
-            throw new InvalidOperationException($"Profile「{profileId}」不存在。");
+        lock (_gate)
+        {
+            if (_db.Get<NyaLlmProfileEntry>(profileId) == null)
+                throw new InvalidOperationException($"Profile「{profileId}」不存在。");
 
-        var row = new NyaLlmRoute { CallSiteId = callSiteId, ProfileId = profileId, UpdatedAt = DateTime.UtcNow };
-        if (_db.Get<NyaLlmRoute>(callSiteId) == null) _db.Insert(row);
-        else _db.Update(row);
-        _logger.LogInformation("[NyaLlmProfileStore] Route set: call_site={CallSiteId} → profile={ProfileId}", callSiteId, profileId);
+            var row = new NyaLlmRoute { CallSiteId = callSiteId, ProfileId = profileId, UpdatedAt = DateTime.UtcNow };
+            if (_db.Get<NyaLlmRoute>(callSiteId) == null) _db.Insert(row);
+            else _db.Update(row);
+            _logger.LogInformation("[NyaLlmProfileStore] Route set: call_site={CallSiteId} → profile={ProfileId}", callSiteId, profileId);
+        }
     }
 
     /// <summary>移除呼叫點的專屬路由 → 回落 __default__（UI「（預設）」）。__default__ 本身不可移除。</summary>
     public bool ClearRoute(string callSiteId)
     {
-        if (callSiteId == DefaultCallSite)
-            throw new InvalidOperationException("系統預設路由不可清除。");
+        lock (_gate)
+        {
+            if (callSiteId == DefaultCallSite)
+                throw new InvalidOperationException("系統預設路由不可清除。");
 
-        var removed = _db.Execute("DELETE FROM nya_llm_routes WHERE call_site_id = @id", new { id = callSiteId }) > 0;
-        _logger.LogInformation("[NyaLlmProfileStore] Route cleared: call_site={CallSiteId} removed={Removed}", callSiteId, removed);
-        return removed;
+            var removed = _db.Execute("DELETE FROM nya_llm_routes WHERE call_site_id = @id", new { id = callSiteId }) > 0;
+            _logger.LogInformation("[NyaLlmProfileStore] Route cleared: call_site={CallSiteId} removed={Removed}", callSiteId, removed);
+            return removed;
+        }
     }
 
     public List<NyaLlmRoute> ListRoutes() => _db.GetAll<NyaLlmRoute>();
@@ -118,16 +154,19 @@ public sealed class NyaLlmProfileStore
     /// <summary>call_site_id → route → profile；查無 route 落 __default__；都查無則拋（mis-seed 守衛）。</summary>
     public NyaLlmProfile ResolveProfile(string callSiteId)
     {
-        var route = _db.Get<NyaLlmRoute>(callSiteId) ?? _db.Get<NyaLlmRoute>(DefaultCallSite);
-        if (route == null)
-            throw new InvalidOperationException(
-                $"No LLM route for call site '{callSiteId}' and no '{DefaultCallSite}' fallback configured. " +
-                $"Profile store is mis-seeded — run migration / set a default profile.");
+        lock (_gate)
+        {
+            var route = _db.Get<NyaLlmRoute>(callSiteId) ?? _db.Get<NyaLlmRoute>(DefaultCallSite);
+            if (route == null)
+                throw new InvalidOperationException(
+                    $"No LLM route for call site '{callSiteId}' and no '{DefaultCallSite}' fallback configured. " +
+                    $"Profile store is mis-seeded — run migration / set a default profile.");
 
-        var entry = _db.Get<NyaLlmProfileEntry>(route.ProfileId)
-            ?? throw new InvalidOperationException(
-                $"LLM route '{route.CallSiteId}' points to missing profile '{route.ProfileId}'.");
-        return Decrypted(entry).ToProfile();
+            var entry = _db.Get<NyaLlmProfileEntry>(route.ProfileId)
+                ?? throw new InvalidOperationException(
+                    $"LLM route '{route.CallSiteId}' points to missing profile '{route.ProfileId}'.");
+            return Decrypted(entry).ToProfile();
+        }
     }
 
     // ── 解密輔助 ─────────────────────────────────────────────────────────────

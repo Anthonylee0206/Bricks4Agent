@@ -10,10 +10,27 @@ const ACTION_LABELS = {
   tool_call: '呼叫工具', tool_result: '工具結果', tool_toggle: '工具開關',
   role_assign: '指派身分組', role_revoke: '撤銷身分組', error: '錯誤',
   guest_message_blocked: '訪客訊息',
+  soul_create: '新增 Soul', soul_update: '更新 Soul', soul_delete: '刪除 Soul',
+  soul_bind: '綁定 Soul', soul_unbind: '解除 Soul 綁定', soul_reload: '重載 Soul',
+  prompt_reload: '重載 Prompt', audit_purge: '清除稽核', config_update: '更新設定',
+  llm_profile_upsert: '儲存模型設定', llm_profile_delete: '刪除模型設定', llm_route_set: '設定模型路由',
 };
 
 const ACTION_OPTIONS = [{ value: '', label: '全部動作' }]
-  .concat(Object.keys(ACTION_LABELS).filter(k => k !== 'guest_message_blocked').map(k => ({ value: k, label: ACTION_LABELS[k] })));
+  .concat(Object.keys(ACTION_LABELS).map(k => ({ value: k, label: ACTION_LABELS[k] })));
+
+const SOUL_REASON_LABELS = {
+  bound: '使用綁定的 Soul', configured_default: '未綁定，使用設定的預設 Soul',
+  bound_soul_missing: '綁定的 Soul 不存在，使用設定的預設 Soul',
+  configured_default_missing: '設定的預設 Soul 不存在，使用內建備援 Soul',
+  bound_and_default_missing: '綁定與預設 Soul 均不存在，使用內建備援 Soul',
+};
+
+function AuditWriteFailures({ count }) {
+  return <div role={count > 0 ? 'alert' : 'status'} style={{ padding: '8px 14px', fontSize: 12, color: count > 0 ? 'var(--c-danger-fg)' : 'var(--c-fg2)' }}>
+    稽核寫入失敗（本次程序累計）：{count ?? '—'}
+  </div>;
+}
 
 function actionColor(a) {
   if (a === 'error' || a === 'memory_delete') return 'var(--c-danger)';
@@ -187,6 +204,7 @@ function AuditLog({ logs, loading, showUser, onUserClick, onDelete, emptyMessage
 function TabC6({ userId }) {
   const [logs, setLogs]       = useState([]);
   const [total, setTotal]     = useState(0);
+  const [writeFailures, setWriteFailures] = useState(null);
   const [loading, setLoading] = useState(false);
   const [action, setAction]   = useState('');
   const [keyword, setKeyword] = useState('');
@@ -200,8 +218,8 @@ function TabC6({ userId }) {
     const filters = {};
     if (act) filters.action = act;
     if (kw && kw.trim()) filters.keyword = kw.trim();
-    const res = await apiCall('GET', `users/${userId}/audit`, { ...filters, limit: lim, offset: off });
-    if (res.success) { setLogs(res.data.logs); setTotal(res.data.total); setApplied(filters); }
+    const res = await apiCall('GET', `users/${encodeURIComponent(userId)}/audit`, { ...filters, limit: lim, offset: off });
+    if (res.success) { setLogs(res.data.logs); setTotal(res.data.total); setApplied(filters); setWriteFailures(res.data.write_failure_count); }
     setLoading(false);
   }
 
@@ -212,7 +230,7 @@ function TabC6({ userId }) {
   async function handleDeleteOne(logId) {
     const ok = await showConfirm('刪除此筆稽核日誌？', '此操作不可還原。');
     if (!ok) return;
-    const res = await apiCall('DELETE', `audit/${logId}`);
+    const res = await apiCall('DELETE', `audit/${encodeURIComponent(logId)}`);
     if (res.success) { showToast('已刪除 1 筆稽核日誌', 'success'); load(action, keyword, limit, offset); }
   }
 
@@ -222,7 +240,7 @@ function TabC6({ userId }) {
       ? await showConfirm('清空符合篩選條件的稽核日誌？', `將永久刪除此用戶符合目前篩選條件的 ${total} 筆稽核日誌，不可還原。`)
       : await showConfirm('清空此用戶全部稽核日誌？', `將永久刪除此用戶的全部 ${total} 筆稽核日誌，不可還原。`);
     if (!ok) return;
-    const res = await apiCall('DELETE', `users/${userId}/audit`, { confirm: 'all', ...applied });
+    const res = await apiCall('DELETE', `users/${encodeURIComponent(userId)}/audit`, { confirm: 'all', ...applied });
     if (res.success) { showToast(`已清空 ${res.data.deleted} 筆稽核日誌`, 'success'); setOffset(0); load(action, keyword, limit, 0); }
   }
 
@@ -238,6 +256,8 @@ function TabC6({ userId }) {
         <Button variant="danger" size="sm" icon="trash" onClick={handleClearUser} disabled={total === 0}>{filtered ? '清空符合條件' : '清空此用戶'}</Button>
       </Toolbar>
 
+      <AuditWriteFailures count={writeFailures} />
+
       <div style={{ flex: 1, overflow: 'auto', background: 'var(--c-surface)' }}>
         <AuditLog logs={logs} loading={loading} onDelete={handleDeleteOne} />
       </div>
@@ -250,7 +270,7 @@ function TabC6({ userId }) {
 }
 
 /* ── Soul 綁定面板（內嵌於概覽） ──────────────────────────── */
-function SoulBindPanel({ userId, currentSoulId, onSoulChanged }) {
+function SoulBindPanel({ userId, currentSoulId, effectiveSoulId, soulReason, onSoulChanged }) {
   const [souls, setSouls]        = useState([]);
   const [selected, setSelected]  = useState(currentSoulId || '');
   const [loading, setLoading]    = useState(false);
@@ -267,8 +287,15 @@ function SoulBindPanel({ userId, currentSoulId, onSoulChanged }) {
 
   async function handleApply() {
     setApply(true);
-    const res = await apiCall('POST', `users/${userId}/soul`, { soul_id: selected });
+    const res = await apiCall('POST', `users/${encodeURIComponent(userId)}/soul`, { soul_id: selected });
     if (res.success) { showToast('Soul 綁定成功', 'success'); onSoulChanged && onSoulChanged(selected); }
+    setApply(false);
+  }
+
+  async function handleUnbind() {
+    setApply(true);
+    const res = await apiCall('DELETE', `users/${encodeURIComponent(userId)}/soul`);
+    if (res.success) { showToast('已解除綁定，改回預設 Soul', 'success'); onSoulChanged && onSoulChanged(null); }
     setApply(false);
   }
 
@@ -276,9 +303,11 @@ function SoulBindPanel({ userId, currentSoulId, onSoulChanged }) {
     <Panel title="Soul 綁定">
       <div style={{ padding: 14, display: 'flex', flexDirection: 'column', gap: 12 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <span style={{ fontSize: 12, color: 'var(--c-fg2)', width: 52, flexShrink: 0 }}>目前</span>
-          <Badge color="var(--c-fg)" mono>{currentSoulId || 'default'}</Badge>
+          <span style={{ fontSize: 12, color: 'var(--c-fg2)', width: 52, flexShrink: 0 }}>綁定</span>
+          <Badge color="var(--c-fg)" mono>{currentSoulId ?? '未綁定'}</Badge>
+          <Button variant="secondary" size="sm" loading={applyLoading} disabled={!currentSoulId} onClick={handleUnbind}>改回預設</Button>
         </div>
+        <div style={{ fontSize: 12, color: 'var(--c-fg2)' }}>生效：{effectiveSoulId} · {SOUL_REASON_LABELS[soulReason] || soulReason}</div>
         {loading
           ? <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--c-fg2)' }}><Spinner size={13} /><span style={{ fontSize: 13 }}>載入 Soul 清單…</span></div>
           : <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -298,4 +327,6 @@ window.TabC6 = TabC6;
 window.AuditLog = AuditLog;
 window.ACTION_OPTIONS = ACTION_OPTIONS;
 window.ACTION_LABELS = ACTION_LABELS;
+window.SOUL_REASON_LABELS = SOUL_REASON_LABELS;
+window.AuditWriteFailures = AuditWriteFailures;
 window.SoulBindPanel = SoulBindPanel;

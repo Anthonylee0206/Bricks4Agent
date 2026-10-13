@@ -1,84 +1,151 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Broker.NyaChat.Abstractions;
 using BrokerCore.Data;
 
 namespace Broker.NyaChat;
 
-/// <summary>
-/// <see cref="INyaConfigStore{T}"/> 的可重載實作。
-///
-/// 設計：快照替換（Snapshot Swap）。各服務透過 <see cref="Current"/> 取得當前生效的
-/// <see cref="NyaChatConfig"/> 物件；<see cref="UpdateAsync"/> 建立全新物件並以單次參考指派
-/// 原子替換，讀取端永遠看到一致快照、無需鎖。
-///
-/// 持久化：以單列 <see cref="NyaConfigEntry"/>（key=<see cref="ConfigKey"/>）存於 SQLite。
-/// 啟動時若 DB 有覆寫則套用，否則使用 appsettings 反序列化得到的 seed。
-/// </summary>
-/// <remarks>
-/// 僅提供機制與目前 <see cref="NyaChatConfig"/> 既有欄位的讀寫；
-/// LlmProfiles / TaskRouting、token 預算新增欄位後，
-/// 因 JSON 全量序列化，無需改動本類即自動隨配置持久化。
-/// </remarks>
 public sealed class NyaChatConfigStore : INyaConfigStore<NyaChatConfig>
 {
     private const string ConfigKey = "nya:chat";
-
     private readonly BrokerDb _db;
     private readonly ILogger<NyaChatConfigStore> _logger;
+    private readonly NyaChatConfig _seed;
+    private readonly object _gate = new();
+    private JsonObject _overrides = new();
     private volatile NyaChatConfig _current;
 
     public NyaChatConfigStore(NyaChatConfig seed, BrokerDb db, ILogger<NyaChatConfigStore> logger)
     {
         _db = db;
         _logger = logger;
+        _seed = Clone(seed);
         _db.EnsureTable<NyaConfigEntry>();
-        _current = LoadOverlayOrSeed(seed);
+        _db.EnsureTable<NyaAuditLog>();
+        _current = Clone(_seed);
+        try
+        {
+            var row = _db.Get<NyaConfigEntry>(ConfigKey);
+            if (row != null && JsonNode.Parse(row.ConfigJson) is JsonObject stored)
+            {
+                foreach (var spec in NyaChatHotSettings.All)
+                    if (stored.TryGetPropertyValue(spec.Key, out var value))
+                        _overrides[spec.Key] = value?.DeepClone();
+                if (stored.TryGetPropertyValue(nameof(NyaChatConfig.Enabled), out var enabled) && enabled is JsonValue)
+                    _overrides[nameof(NyaChatConfig.Enabled)] = enabled.DeepClone();
+            }
+            _current = ApplyOverrides(_overrides);
+        }
+        catch (Exception ex)
+        {
+            _overrides = new();
+            _logger.LogWarning(ex, "載入 NyaChat 設定失敗，使用 appsettings 預設。");
+        }
     }
 
     public NyaChatConfig Current => _current;
 
+    public object Effective()
+    {
+        lock (_gate)
+        {
+            var values = JsonSerializer.SerializeToNode(_current)!.AsObject();
+            var defaults = JsonSerializer.SerializeToNode(_seed)!.AsObject();
+            return new
+            {
+                settings = NyaChatHotSettings.All.Select(spec => new
+                {
+                    key = spec.Key, label = spec.Label, type = spec.Type, min = spec.Min, max = spec.Max,
+                    description = spec.Description, value = values[spec.Key]?.DeepClone(),
+                    default_value = defaults[spec.Key]?.DeepClone(),
+                    source = _overrides.ContainsKey(spec.Key) ? "後台設定" : "appsettings 預設",
+                    applies_immediately = true, editable = true
+                }).ToArray(),
+                read_only = new[]
+                {
+                    new { key = "DbPath", value = (object)_seed.DbPath, explanation = "資料庫路徑在啟動時固定，修改 appsettings 後重啟。" },
+                    new { key = "TokenEstimatorCjkPerChar", value = (object)_seed.TokenEstimatorCjkPerChar, explanation = "token 估算係數在啟動時固定，修改 appsettings 後重啟。" },
+                    new { key = "TokenEstimatorLatinPerChar", value = (object)_seed.TokenEstimatorLatinPerChar, explanation = "token 估算係數在啟動時固定，修改 appsettings 後重啟。" }
+                }
+            };
+        }
+    }
+
+    public Task<string[]> PatchAsync(JsonElement patch, string username, string role, CancellationToken ct)
+    {
+        lock (_gate)
+        {
+            ct.ThrowIfCancellationRequested();
+            var merged = NyaChatHotSettings.Merge(_current, patch, out var changed);
+            var updated = merged.Deserialize<NyaChatConfig>()!;
+            var overrides = (JsonObject)_overrides.DeepClone();
+            foreach (var key in changed) overrides[key] = merged[key]?.DeepClone();
+            _db.InTransaction(() =>
+            {
+                Persist(overrides);
+                Audit("config_update", changed, username, role);
+            });
+            _overrides = overrides;
+            _current = updated;
+            return Task.FromResult(changed);
+        }
+    }
+
+    public Task ResetAsync(string username, string role, CancellationToken ct)
+    {
+        lock (_gate)
+        {
+            ct.ThrowIfCancellationRequested();
+            _db.InTransaction(() =>
+            {
+                _db.Delete<NyaConfigEntry>(ConfigKey);
+                Audit("config_reset", _overrides.Select(p => p.Key).ToArray(), username, role);
+            });
+            _overrides = new();
+            _current = Clone(_seed);
+            return Task.CompletedTask;
+        }
+    }
+
     public Task UpdateAsync(NyaChatConfig config, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(config);
-        Persist(config);
-        _current = config; // 原子參考替換 → 後續 Current 立即生效
-        _logger.LogInformation("NyaChat 配置已更新並持久化（key={Key}）。", ConfigKey);
-        return Task.CompletedTask;
+        lock (_gate)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var values = JsonSerializer.SerializeToNode(config)!.AsObject();
+            var overrides = new JsonObject();
+            foreach (var spec in NyaChatHotSettings.All) overrides[spec.Key] = values[spec.Key]?.DeepClone();
+            if (_overrides.TryGetPropertyValue(nameof(NyaChatConfig.Enabled), out var enabled))
+                overrides[nameof(NyaChatConfig.Enabled)] = enabled?.DeepClone();
+            _db.InTransaction(() => Persist(overrides));
+            _overrides = overrides;
+            _current = ApplyOverrides(overrides);
+            return Task.CompletedTask;
+        }
     }
 
-    private NyaChatConfig LoadOverlayOrSeed(NyaChatConfig seed)
+    private NyaChatConfig ApplyOverrides(JsonObject overrides)
     {
-        try
-        {
-            var row = _db.Get<NyaConfigEntry>(ConfigKey);
-            if (row != null && !string.IsNullOrWhiteSpace(row.ConfigJson))
-            {
-                var overlay = JsonSerializer.Deserialize<NyaChatConfig>(row.ConfigJson);
-                if (overlay != null)
-                {
-                    _logger.LogInformation("NyaChat 配置由 DB 覆寫載入（updated_at={At:u}）。", row.UpdatedAt);
-                    return overlay;
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "載入 NyaChat 配置覆寫失敗，回退使用 appsettings seed。");
-        }
-        return seed;
+        var node = JsonSerializer.SerializeToNode(_seed)!.AsObject();
+        foreach (var (key, value) in overrides) node[key] = value?.DeepClone();
+        return node.Deserialize<NyaChatConfig>()!;
     }
 
-    private void Persist(NyaChatConfig config)
+    private void Persist(JsonObject overrides)
     {
-        var json = JsonSerializer.Serialize(config);
-        // 單列覆寫：先刪後插，避免依賴 ORM 的 upsert 語意
-        if (_db.Get<NyaConfigEntry>(ConfigKey) != null)
-            _db.Delete<NyaConfigEntry>(ConfigKey);
-        _db.Insert(new NyaConfigEntry
+        if (_db.Get<NyaConfigEntry>(ConfigKey) != null) _db.Delete<NyaConfigEntry>(ConfigKey);
+        _db.Insert(new NyaConfigEntry { ConfigKey = ConfigKey, ConfigJson = overrides.ToJsonString(), UpdatedAt = DateTime.UtcNow });
+    }
+
+    private void Audit(string action, string[] changed, string username, string role)
+        => _db.Insert(new NyaAuditLog
         {
-            ConfigKey = ConfigKey,
-            ConfigJson = json,
-            UpdatedAt = DateTime.UtcNow
+            LogId = Guid.NewGuid().ToString("N"), UserId = "__sys__", Action = action,
+            DetailJson = JsonSerializer.Serialize(new { changed, @operator = new { username, role } }),
+            Result = "success", CreatedAt = DateTime.UtcNow
         });
-    }
+
+    private static NyaChatConfig Clone(NyaChatConfig config)
+        => JsonSerializer.Deserialize<NyaChatConfig>(JsonSerializer.Serialize(config))!;
 }

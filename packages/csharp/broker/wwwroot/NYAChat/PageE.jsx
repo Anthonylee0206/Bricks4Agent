@@ -113,6 +113,7 @@ function PageE() {
   const [loading, setLoading] = useState(false);
   const [editing, setEditing] = useState(null); // { soul, isNew }
   const [saving,  setSaving]  = useState(false);
+  const [loadFailures, setLoadFailures] = useState([]);
 
   async function loadAll() {
     setLoading(true);
@@ -123,7 +124,7 @@ function PageE() {
   }
 
   async function openEdit(soulId) {
-    const res = await apiCall('GET', `souls/${soulId}`);
+    const res = await apiCall('GET', `souls/${encodeURIComponent(soulId)}`);
     if (res.success) setEditing({ soul: res.data, isNew: false });
   }
 
@@ -133,7 +134,7 @@ function PageE() {
 
     setSaving(true);
     const method = editing.isNew ? 'POST' : 'PUT';
-    const path   = editing.isNew ? 'souls' : `souls/${form.soul_id}`;
+    const path   = editing.isNew ? 'souls' : `souls/${encodeURIComponent(form.soul_id)}`;
     const res = await apiCall(method, path, form);
     setSaving(false);
     if (res.success) {
@@ -144,10 +145,13 @@ function PageE() {
   }
 
   async function handleDelete(soulId) {
+    const preview = await apiCall('GET', `souls/${encodeURIComponent(soulId)}`);
+    if (!preview.success) return;
+    const affected = preview.data.bound_users || [];
     const ok = await showConfirm('刪除 Soul',
-      `確定要刪除 Soul "${soulId}" 嗎？此操作無法復原。已綁定此 Soul 的使用者將回退到預設 Soul。`);
+      `確定要刪除 Soul "${soulId}" 嗎？此操作無法復原。已綁定此 Soul 的使用者將回退到預設 Soul。受影響的綁定使用者（${affected.length}）：${affected.join('、') || '無'}。`);
     if (!ok) return;
-    const res = await apiCall('DELETE', `souls/${soulId}`);
+    const res = await apiCall('DELETE', `souls/${encodeURIComponent(soulId)}`);
     if (res.success) {
       showToast(`Soul "${soulId}" 已刪除`, 'success');
       loadAll();
@@ -158,7 +162,8 @@ function PageE() {
     const res = await apiCall('POST', 'souls/reload');
     if (res.success) {
       setSouls(res.data.souls);
-      showToast(`已重新載入 ${res.data.loaded} 個 Soul`, 'success');
+      setLoadFailures(res.data.failures || []);
+      showToast(res.data.ok ? `已重新載入 ${res.data.loaded} 個 Soul` : `已載入 ${res.data.loaded} 個 Soul，${res.data.failures.length} 個檔案載入失敗`, res.data.ok ? 'success' : 'error');
     }
   }
 
@@ -183,6 +188,9 @@ function PageE() {
       </PageHeader>
 
       <ContentArea>
+        {loadFailures.length > 0 && <Panel title="Soul 載入失敗">
+          {loadFailures.map((f, i) => <div key={i} style={{ padding: 14, color: 'var(--c-danger-fg)' }}>{f.file}：{f.message}</div>)}
+        </Panel>}
         <Panel title="Soul 清單" subtitle={`${souls.length} 個`}>
           {loading && souls.length === 0
             ? <EmptyState loading />

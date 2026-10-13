@@ -114,11 +114,8 @@ public sealed class GeminiProvider : INyaLlmProvider
             body["tools"] = new JsonArray { new JsonObject { ["functionDeclarations"] = decls } };
         }
 
-        var genCfg = new JsonObject { ["temperature"] = request.Temperature, ["topP"] = request.TopP };
+        var genCfg = NyaLlmAdminSettings.Sampling(pr.Profile, request);
         if (request.MaxTokens.HasValue) genCfg["maxOutputTokens"] = request.MaxTokens.Value;
-        // profile 取樣覆寫寫入 generationConfig（Gemini 的取樣參數落點）。
-        // 註：Gemini 的 thinking（thinkingConfig）形狀與共用 ApplyThinkingParams 不同，故此處不套用 thinking helper；如需另以 Gemini 專屬實作（後續）。
-        NyaLlmSerialization.ApplyModelOverrides(genCfg, pr.Profile);
         body["generationConfig"] = genCfg;
 
         return body;

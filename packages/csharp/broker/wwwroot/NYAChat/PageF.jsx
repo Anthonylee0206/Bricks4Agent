@@ -41,7 +41,7 @@ function PageF() {
   async function handleToggle(tool) {
     const newEnabled = !tool.enabled;
     setToggling(p => ({ ...p, [tool.id]: true }));
-    const res = await apiCall('POST', `tools/${tool.id}/toggle`, { enabled: newEnabled });
+    const res = await apiCall('POST', `tools/${encodeURIComponent(tool.id)}/toggle`, { enabled: newEnabled });
     if (res.success) {
       setTools(prev => prev.map(t => t.id === tool.id ? { ...t, enabled: newEnabled } : t));
       showToast(`${tool.name} 已${newEnabled ? '啟用' : '停用'}`, 'success');
@@ -58,7 +58,7 @@ function PageF() {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
       <PageHeader title="工具" count={tools.length ? `${enabledCount} / ${tools.length} 已啟用` : undefined}
-        desc="停用的工具 LLM 仍看得到，但呼叫時會回覆「功能已關閉」；需要權限的工具只對有權限的使用者開放">
+        desc="停用的工具不會提供給模型使用，被問到時 NYA 會說明目前沒開放；需要權限的工具只對有權限的使用者開放">
         <Button variant="secondary" size="sm" icon="refresh" loading={loading} onClick={loadTools}>重新整理</Button>
       </PageHeader>
 

@@ -22,8 +22,11 @@ public class NyaChatConfig
     public string DbPath { get; set; } = "nyachat.db";
 
     // ── 記憶設定 ──────────────────────────────────────────────────────────────
-    /// <summary>送入 LLM 的短期記憶最大則數（is_summarized=false 且 is_deleted=false）</summary>
-    public int ShortTermMessageLimit { get; set; } = 30;
+    /// <summary>送入 LLM 的近期對話最大則數（實際則數再受 token 預算截斷）</summary>
+    public int ShortTermMessageLimit { get; set; } = 200;
+
+    /// <summary>是否啟用自動滾動摘要（背景壓縮並注入摘要）。關閉時近期對話不受摘要標記影響。</summary>
+    public bool AutoSummarizeEnabled { get; set; } = false;
 
     /// <summary>累積到多少則（含 is_summarized）後觸發摘要壓縮（小批次勤摘要 → 調小）</summary>
     public int SummarizeTriggerCount { get; set; } = 12;

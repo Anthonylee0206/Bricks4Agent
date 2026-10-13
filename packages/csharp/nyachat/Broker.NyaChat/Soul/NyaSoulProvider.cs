@@ -36,9 +36,19 @@ public class NyaSoulProvider : IDisposable
     /// 優先查 nya_soul_bindings；若無則使用 DefaultSoulId。
     /// </summary>
     public SoulDefinition GetSoul(string userId)
+        => ResolveSoul(userId).Soul;
+
+    public (string? BoundSoulId, SoulDefinition Soul, string Reason) ResolveSoul(string userId)
     {
-        var soulId = _memoryService.GetSoulBinding(userId) ?? _config.DefaultSoulId;
-        return GetSoulById(soulId) ?? GetSoulById(_config.DefaultSoulId) ?? CreateFallbackSoul();
+        var boundId = _memoryService.GetSoulBinding(userId);
+        lock (_cacheLock)
+        {
+            if (boundId != null && GetSoulById(boundId) is { } bound)
+                return (boundId, bound, "bound");
+            if (GetSoulById(_config.DefaultSoulId) is { } configured)
+                return (boundId, configured, boundId == null ? "configured_default" : "bound_soul_missing");
+            return (boundId, CreateFallbackSoul(), boundId == null ? "configured_default_missing" : "bound_and_default_missing");
+        }
     }
 
     /// <summary>列出所有可用 Soul 的 ID 與顯示名稱</summary>
@@ -114,14 +124,14 @@ public class NyaSoulProvider : IDisposable
     }
 
     /// <summary>強制重新載入所有 Soul 定義（Runtime 熱更新用）</summary>
-    public void ReloadSouls()
+    public IReadOnlyList<SoulLoadFailure> ReloadSouls()
     {
         lock (_cacheLock)
         {
             _soulCache.Clear();
             _soulFilePaths.Clear();
+            return LoadAllSouls();
         }
-        LoadAllSouls();
     }
 
     public void Dispose() => _watcher?.Dispose();
@@ -182,8 +192,11 @@ public class NyaSoulProvider : IDisposable
         }
     }
 
-    private void LoadAllSouls()
+    public sealed record SoulLoadFailure(string File, string Message);
+
+    private IReadOnlyList<SoulLoadFailure> LoadAllSouls()
     {
+        var failures = new List<SoulLoadFailure>();
         try
         {
             var soulsDir = GetSoulsDir();
@@ -191,7 +204,8 @@ public class NyaSoulProvider : IDisposable
             if (!Directory.Exists(soulsDir))
             {
                 _logger.LogWarning("[NyaSoul] Souls directory not found: {Dir}. Using fallback soul.", soulsDir);
-                return;
+                failures.Add(new SoulLoadFailure(soulsDir, "Souls directory not found."));
+                return failures;
             }
 
             var files = Directory.GetFiles(soulsDir, "*.json", SearchOption.TopDirectoryOnly);
@@ -202,6 +216,13 @@ public class NyaSoulProvider : IDisposable
                     try
                     {
                         var json = File.ReadAllText(file);
+                        using var document = JsonDocument.Parse(json);
+                        if (document.RootElement.ValueKind != JsonValueKind.Object ||
+                            !document.RootElement.EnumerateObject().Any(p =>
+                                string.Equals(p.Name, "soul_id", StringComparison.OrdinalIgnoreCase) &&
+                                p.Value.ValueKind == JsonValueKind.String &&
+                                !string.IsNullOrWhiteSpace(p.Value.GetString())))
+                            throw new JsonException("Missing or empty soul_id.");
                         var soul = JsonSerializer.Deserialize<SoulDefinition>(json,
                             new JsonSerializerOptions
                             {
@@ -216,10 +237,13 @@ public class NyaSoulProvider : IDisposable
                             _logger.LogInformation("[NyaSoul] Loaded soul: {Id} ({Name})",
                                 soul.SoulId, soul.DisplayName);
                         }
+                        else
+                            failures.Add(new SoulLoadFailure(Path.GetFileName(file), "Missing or empty soul_id."));
                     }
                     catch (Exception ex)
                     {
                         _logger.LogWarning(ex, "[NyaSoul] Failed to load soul file: {File}", file);
+                        failures.Add(new SoulLoadFailure(Path.GetFileName(file), ex.Message));
                     }
                 }
             }
@@ -227,7 +251,9 @@ public class NyaSoulProvider : IDisposable
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "[NyaSoul] Failed to scan souls directory");
+            failures.Add(new SoulLoadFailure(GetSoulsDir(), ex.Message));
         }
+        return failures;
     }
 
     private static SoulDefinition CreateFallbackSoul() => new()

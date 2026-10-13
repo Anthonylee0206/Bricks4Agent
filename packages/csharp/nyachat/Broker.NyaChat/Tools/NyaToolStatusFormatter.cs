@@ -15,7 +15,9 @@ public enum NyaToolExecStatus
     Failed,
 
     /// <summary>工具根本沒有執行：功能關閉、無權限或不存在（執行門擋下）。</summary>
-    NotEnabled
+    NotEnabled,
+
+    Denied
 }
 
 /// <summary>
@@ -38,6 +40,7 @@ public static class NyaToolStatusFormatter
         NyaToolExecStatus.Success    => "成功",
         NyaToolExecStatus.Failed     => "失敗（工具已執行但未成功）",
         NyaToolExecStatus.NotEnabled => "未啟動（功能關閉／無權限／不存在，並未實際執行）",
+        NyaToolExecStatus.Denied     => "未啟動（權限不足，並未實際執行）",
         _                            => "未知"
     };
 
@@ -49,5 +52,25 @@ public static class NyaToolStatusFormatter
     {
         var body = string.IsNullOrEmpty(content) ? "(no content)" : content;
         return $"[工具執行狀態：{Label(status)}]\n{body}";
+    }
+
+    public static string FormatFallback(IEnumerable<NyaToolExecStatus> statuses)
+    {
+        var counts = statuses.GroupBy(s => s).ToDictionary(g => g.Key, g => g.Count());
+        if (counts.Count == 0) return "這次沒有執行任何工具操作。";
+        var parts = new List<string>();
+        foreach (var status in new[] { NyaToolExecStatus.Success, NyaToolExecStatus.Failed, NyaToolExecStatus.Denied, NyaToolExecStatus.NotEnabled })
+        {
+            if (!counts.TryGetValue(status, out var count)) continue;
+            var outcome = status switch
+            {
+                NyaToolExecStatus.Success => "操作成功",
+                NyaToolExecStatus.Failed => "操作失敗",
+                NyaToolExecStatus.Denied => "因權限不足未執行",
+                _ => "因工具未啟用或不存在而未執行"
+            };
+            parts.Add($"{count} 項{outcome}");
+        }
+        return $"這次有{string.Join("、", parts)}；詳細結果暫時無法整理，請稍後再試。";
     }
 }

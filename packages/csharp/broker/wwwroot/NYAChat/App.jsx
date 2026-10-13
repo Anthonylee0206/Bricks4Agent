@@ -1,7 +1,7 @@
 /* NyaChat Admin — App（內容區 + hash router；頂欄與左側選單由 /admin-shell.js 提供） */
 const { useState, useEffect } = React;
 
-const PAGES = ['home', 'users', 'audit', 'souls', 'tools', 'llm'];
+const PAGES = ['home', 'users', 'audit', 'souls', 'tools', 'llm', 'settings'];
 
 function parseHash(hash) {
   const raw = hash.replace(/^#/, '') || 'home';
@@ -33,9 +33,10 @@ function App() {
     return () => window.removeEventListener('hashchange', onHash);
   }, []);
 
-  useEffect(() => {
-    apiCall('GET', 'status').then(res => { if (res.success) setStatus(res.data); });
-  }, []);
+  async function refreshStatus() {
+    const res = await apiCall('GET', 'status');
+    if (res.success) setStatus(res.data);
+  }
 
   function navigate(target) {
     window.location.hash = '#' + target;
@@ -43,13 +44,14 @@ function App() {
 
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 0 }}>
-      {route.page === 'home'  && <PageHome onNavigate={navigate} status={status} />}
+      {route.page === 'home'  && <PageHome onNavigate={navigate} status={status} onRefreshStatus={refreshStatus} />}
       {route.page === 'users' && <PageB onNavigate={navigate} initialKeyword={route.params.get('q') || ''} />}
       {route.page === 'user'  && <PageC key={route.userId} userId={route.userId} onNavigate={navigate} />}
       {route.page === 'audit' && <PageD key={route.params.toString()} onNavigate={navigate} initialResult={route.params.get('result') || ''} />}
       {route.page === 'souls' && <PageE />}
       {route.page === 'tools' && <PageF />}
       {route.page === 'llm'   && <PageG />}
+      {route.page === 'settings' && <PageI />}
       <ToastContainer />
       <ConfirmDialog />
     </div>

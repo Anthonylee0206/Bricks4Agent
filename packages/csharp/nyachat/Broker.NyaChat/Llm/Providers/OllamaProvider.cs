@@ -30,12 +30,7 @@ public sealed class OllamaProvider : INyaLlmProvider
 
         var client = NyaLlmSerialization.CreateClient(_httpClientFactory, profile.BaseUrl, null, profile.TimeoutSeconds);
 
-        var optionsObj = new JsonObject
-        {
-            ["temperature"] = request.Temperature,
-            ["top_p"] = request.TopP
-        };
-        NyaLlmSerialization.ApplyModelOverrides(optionsObj, profile); // 取代硬編碼 hack（寫入 options）
+        var optionsObj = NyaLlmAdminSettings.Sampling(profile, request);
 
         var body = new JsonObject
         {

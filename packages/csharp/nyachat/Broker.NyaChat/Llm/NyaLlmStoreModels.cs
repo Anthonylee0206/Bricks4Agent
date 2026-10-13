@@ -32,11 +32,11 @@ public class NyaLlmProfileEntry
     /// <summary>params_json 的型別化形狀（序列化/反序列化用）。</summary>
     private sealed class ParamBlob
     {
-        public float temperature { get; set; } = 0.7f;
-        public float top_p { get; set; } = 0.9f;
-        public int timeout_seconds { get; set; } = 120;
+        public float? temperature { get; set; } = 0.7f;
+        public float? top_p { get; set; } = 0.9f;
+        public int? timeout_seconds { get; set; } = 120;
         public int? max_context_tokens { get; set; }
-        public Dictionary<string, double>? model_overrides { get; set; }
+        public Dictionary<string, double?>? model_overrides { get; set; }
         public bool? enable_thinking { get; set; }
         public int? thinking_budget { get; set; }
     }
@@ -45,11 +45,17 @@ public class NyaLlmProfileEntry
     {
         var b = JsonSerializer.Deserialize<ParamBlob>(
             string.IsNullOrWhiteSpace(ParamsJson) ? "{}" : ParamsJson) ?? new ParamBlob();
+        using var doc = JsonDocument.Parse(string.IsNullOrWhiteSpace(ParamsJson) ? "{}" : ParamsJson);
+        var overrides = new Dictionary<string, double>();
+        foreach (var spec in NyaLlmParamCatalog.All.Where(s => s.Key is "frequency_penalty" or "presence_penalty" or "repeat_penalty"))
+            if (doc.RootElement.TryGetProperty(spec.Key, out var value) && value.ValueKind == JsonValueKind.Number) overrides[spec.Key] = value.GetDouble();
+        if (b.model_overrides != null)
+            foreach (var (key, value) in b.model_overrides) if (value.HasValue) overrides[key] = value.Value;
         return new NyaLlmProfile
         {
             Provider = Provider, BaseUrl = BaseUrl, ApiKey = ApiKey, Model = Model,
-            Temperature = b.temperature, TopP = b.top_p, TimeoutSeconds = b.timeout_seconds,
-            MaxContextTokens = b.max_context_tokens, ModelOverrides = b.model_overrides,
+            Temperature = b.temperature ?? 0.7f, TopP = b.top_p ?? 0.9f, TimeoutSeconds = b.timeout_seconds ?? 120,
+            MaxContextTokens = b.max_context_tokens, ModelOverrides = overrides.Count == 0 ? null : overrides,
             EnableThinking = b.enable_thinking, ThinkingBudget = b.thinking_budget
         };
     }
@@ -62,7 +68,7 @@ public class NyaLlmProfileEntry
             ParamsJson = JsonSerializer.Serialize(new ParamBlob
             {
                 temperature = p.Temperature, top_p = p.TopP, timeout_seconds = p.TimeoutSeconds,
-                max_context_tokens = p.MaxContextTokens, model_overrides = p.ModelOverrides,
+                max_context_tokens = p.MaxContextTokens, model_overrides = p.ModelOverrides?.ToDictionary(kv => kv.Key, kv => (double?)kv.Value),
                 enable_thinking = p.EnableThinking, thinking_budget = p.ThinkingBudget
             })
         };

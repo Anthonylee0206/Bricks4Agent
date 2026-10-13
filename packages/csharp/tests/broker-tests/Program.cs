@@ -394,6 +394,12 @@ failed += teFailed;
 
 Console.WriteLine();
 
+var (uxPassed, uxFailed) = Broker.Tests.NyaChatUxTests.Run();
+passed += uxPassed;
+failed += uxFailed;
+
+Console.WriteLine();
+
 var (stPassed, stFailed) = Broker.Tests.NyaSearchToolTests.Run();
 passed += stPassed;
 failed += stFailed;
@@ -457,6 +463,12 @@ Console.WriteLine();
 var (ggPassed, ggFailed) = Broker.Tests.NyaConversationTopicTests.Run();
 passed += ggPassed;
 failed += ggFailed;
+
+Console.WriteLine();
+
+var (mv2Passed, mv2Failed) = Broker.Tests.NyaMemoryV2Tests.Run();
+passed += mv2Passed;
+failed += mv2Failed;
 
 Console.WriteLine();
 

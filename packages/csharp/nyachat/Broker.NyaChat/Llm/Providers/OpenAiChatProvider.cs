@@ -31,15 +31,10 @@ public sealed class OpenAiChatProvider : INyaLlmProvider
 
         var client = NyaLlmSerialization.CreateClient(_httpClientFactory, profile.BaseUrl, profile.ApiKey, profile.TimeoutSeconds);
 
-        var body = new JsonObject
-        {
-            ["model"] = request.Model,
-            ["messages"] = NyaLlmSerialization.BuildJsonMessages(request.Messages),
-            ["stream"] = false,
-            ["temperature"] = request.Temperature,
-            ["top_p"] = request.TopP
-        };
-        NyaLlmSerialization.ApplyModelOverrides(body, profile); // 取代硬編碼 hack（寫入 body 頂層）
+        var body = NyaLlmAdminSettings.Sampling(profile, request);
+        body["model"] = request.Model;
+        body["messages"] = NyaLlmSerialization.BuildJsonMessages(request.Messages);
+        body["stream"] = false;
         NyaLlmSerialization.ApplyThinkingParams(body, profile); // thinking：enable_thinking / thinking_budget（頂層）
 
         if (request.MaxTokens.HasValue)
@@ -59,7 +54,11 @@ public sealed class OpenAiChatProvider : INyaLlmProvider
         }
 
         using var doc = JsonDocument.Parse(raw);
-        var choices = doc.RootElement.GetProperty("choices");
+        if (!doc.RootElement.TryGetProperty("choices", out var choices) || choices.ValueKind != JsonValueKind.Array)
+        {
+            _logger.LogError("[NyaLlm/Chat] response without choices: {Raw}", NyaLlmSerialization.Truncate(raw, 500));
+            return null;
+        }
         if (choices.GetArrayLength() == 0) return null;
 
         var choice = choices[0];

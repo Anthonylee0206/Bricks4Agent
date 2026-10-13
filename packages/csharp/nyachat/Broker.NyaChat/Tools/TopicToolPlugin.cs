@@ -39,10 +39,10 @@ public sealed class TopicToolPlugin : INyaToolPlugin
         new NyaToolSchema
         {
             Name        = "new_topic",
-            Description = "開一個新話題並切換過去。用於使用者想開始一段全新、與目前無關的對話時。新話題的對話與摘要會與其他話題獨立。",
+            Description = "開一個新話題並切換過去（話題是整理對話用的標籤，不會讓你忘記剛才聊的內容）。用於使用者明確想開始另一個主題時。",
             Group       = "topic",
             DefaultEnabled = true,
-            CapabilityStatement = "我可以幫你開一個新話題，把新的對話跟舊的分開。",
+            CapabilityStatement = "我可以幫你開新話題，方便整理對話。",
             Parameters = new[]
             {
                 new NyaToolParam { Name = "title", Required = false, Description = "新話題的標題（可選，省略則自動命名）" },
@@ -103,7 +103,7 @@ public sealed class TopicToolPlugin : INyaToolPlugin
                         action = "new_topic",
                         topic_id = topic.TopicId,
                         title = topic.Title,
-                        note = "新話題已建立並切換；本輪對話仍屬舊話題，下一則訊息起進入新話題。"
+                        note = "新話題已建立並切換；剛才的對話內容你仍然記得。"
                     });
                 }
 

@@ -109,13 +109,14 @@ public static class NyaPromptTests
 
     private static void TestAllToolsExposedUsableIsSubset()
     {
-        Console.WriteLine("--- BuildLlmTools exposes ALL; GetUsableSchemas is the effective subset (item 7) ---");
+        Console.WriteLine("--- BuildLlmTools exposes only usable tools; unusable ones are listed as closed ---");
         var a = Schema("search", "搜尋能力", group: "search");
         var b = Schema("rail", "台鐵查詢能力", group: "transport");
         var registry = Registry(new DenyToolAuthorizer("rail"), new FakePlugin(a, b));
         var usable = registry.GetUsableSchemas("u1", "line").Select(s => s.Name).OrderBy(x => x).ToList();
         var llm = registry.BuildLlmTools("u1", "line").Select(t => t.Function.Name).OrderBy(x => x).ToList();
-        AssertTrue("llm-includes-rail", llm.Contains("rail"));      // 全暴露
+        AssertTrue("llm-excludes-unauthorized-rail", !llm.Contains("rail"));
+        AssertTrue("unusable-listed-with-reason", registry.GetUnavailableSchemas("u1", "line").Any(u => u.Schema.Name == "rail" && u.Reason == "not_authorized"));
         AssertTrue("llm-includes-search", llm.Contains("search"));
         AssertTrue("usable-excludes-rail", !usable.Contains("rail")); // 有效集合排除越權
         AssertTrue("usable-subset", usable.All(llm.Contains));
@@ -201,7 +202,7 @@ public static class NyaPromptTests
             new List<NyaMessage>(), NyaPromptBudget.Unlimited, NyaTokenEstimator.Default, "u1", "line",
             topics, "t_1", out _);
         var sys = msgs[0].Content;
-        AssertTrue("topics-header", sys.Contains("可切換"));
+        AssertTrue("topics-header", sys.Contains("switch_topic") && sys.Contains("不會讓你忘記"));
         AssertTrue("topics-list-t1", sys.Contains("t_1") && sys.Contains("投資"));
         AssertTrue("topics-current-marker", sys.Contains("（目前）"));
 

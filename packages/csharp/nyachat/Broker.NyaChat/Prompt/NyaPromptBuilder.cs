@@ -95,6 +95,7 @@ public class NyaPromptBuilder
 
         // 能力與指引依「該用戶 / 通道可用的工具」生成。一次解析、固定段與最終組裝共用，確保一致。
         var usableTools = _toolRegistry.GetUsableSchemas(userId, channelType);
+        var unavailableTools = _toolRegistry.GetUnavailableSchemas(userId, channelType);
 
         List<NyaFact> selectedFacts;
         List<NyaSummary> selectedSummaries;
@@ -112,7 +113,7 @@ public class NyaPromptBuilder
         else
         {
             // 固定段成本：以「無 facts/summaries」的 system prompt 估上界（含 identity/capabilities/instructions 鷹架）。
-            var fixedText = BuildSystemPrompt(soul, new List<NyaFact>(), new List<NyaSummary>(), usableTools, availableTopics, currentTopicId);
+            var fixedText = BuildSystemPrompt(soul, new List<NyaFact>(), new List<NyaSummary>(), usableTools, unavailableTools, availableTopics, currentTopicId);
             var fixedCost = estimator.Estimate(fixedText) + estimator.Estimate(currentUserMessage) + 8;
             var remaining = Math.Max(0, budget.InputTokenBudget - fixedCost);
 
@@ -129,10 +130,19 @@ public class NyaPromptBuilder
 
         var messages = new List<NyaLlmMessage>
         {
-            new() { Role = "system", Content = BuildSystemPrompt(soul, selectedFacts, selectedSummaries, usableTools, availableTopics, currentTopicId) }
+            new() { Role = "system", Content = BuildSystemPrompt(soul, selectedFacts, selectedSummaries, usableTools, unavailableTools, availableTopics, currentTopicId) }
         };
+        DateTime? previousAt = null;
         foreach (var msg in selectedHistory)
-            messages.Add(new NyaLlmMessage { Role = msg.Role, Content = msg.Content });
+        {
+            var at = DateTime.SpecifyKind(msg.CreatedAt, msg.CreatedAt.Kind == DateTimeKind.Unspecified ? DateTimeKind.Utc : msg.CreatedAt.Kind).ToUniversalTime();
+            var gap = previousAt == null ? DateTime.UtcNow - at : at - previousAt.Value;
+            var content = msg.Role == "user" && gap >= TimeSpan.FromHours(3)
+                ? $"[{at.ToLocalTime():yyyy-MM-dd HH:mm}] {msg.Content}"
+                : msg.Content;
+            messages.Add(new NyaLlmMessage { Role = msg.Role, Content = content });
+            previousAt = at;
+        }
         messages.Add(new NyaLlmMessage { Role = "user", Content = currentUserMessage });
 
         report.EstimatedTokens = estimator.Estimate(messages);
@@ -155,7 +165,7 @@ public class NyaPromptBuilder
         => category is "instruction" or "identity";
 
     private static int FactTokens(NyaFact f, NyaTokenEstimator est)
-        => est.Estimate(f.FactKey) + est.Estimate(f.FactValue) + 2;
+        => est.Estimate(f.FactKey) + est.Estimate(f.FactValue) + est.Estimate(FactDate(f)) + 4;
 
     private static int SumFactTokens(IEnumerable<NyaFact> facts, NyaTokenEstimator est)
         => facts.Sum(f => FactTokens(f, est));
@@ -224,8 +234,8 @@ public class NyaPromptBuilder
             var cost = est.Estimate(recent[i].Content) + 4;
             if (used + cost > historyBudget && kept.Count >= coherenceFloor)
             {
-                report.HistoryDropped++;
-                continue;
+                report.HistoryDropped += i + 1;
+                break;
             }
             kept.Add(recent[i]);
             used += cost;
@@ -241,7 +251,9 @@ public class NyaPromptBuilder
     /// 動態能力邊界：可用能力由 <paramref name="usableTools"/> 的 <c>CapabilityStatement</c> 逐句生成；
     /// 限制只列模板的全域不變項。<b>不</b>重複 function-calling schema 的工具名稱/參數（5B）。
     /// </summary>
-    private string BuildCapabilities(IReadOnlyList<NyaToolSchema> usableTools)
+    private string BuildCapabilities(
+        IReadOnlyList<NyaToolSchema> usableTools,
+        IReadOnlyList<(NyaToolSchema Schema, string Reason)> unavailableTools)
     {
         var sb = new StringBuilder();
 
@@ -256,6 +268,18 @@ public class NyaPromptBuilder
             sb.AppendLine(_templates.Section(Tpl, "capabilities_can_header"));
             foreach (var s in statements)
                 sb.AppendLine($"- {s}");
+            sb.AppendLine();
+        }
+
+        var closed = unavailableTools
+            .Select(u => (Text: string.IsNullOrWhiteSpace(u.Schema.CapabilityStatement) ? u.Schema.Name : u.Schema.CapabilityStatement!, u.Reason))
+            .GroupBy(u => u.Text).Select(g => g.First())
+            .ToList();
+        if (closed.Count > 0)
+        {
+            sb.AppendLine(_templates.Section(Tpl, "capabilities_closed_header"));
+            foreach (var c in closed)
+                sb.AppendLine($"- {c.Text}（{(c.Reason == "disabled" ? "管理員已關閉" : "這位使用者沒有權限")}）");
             sb.AppendLine();
         }
 
@@ -280,13 +304,13 @@ public class NyaPromptBuilder
         var sb = new StringBuilder();
         sb.AppendLine(_templates.Section(Tpl, "behavior_directive"));
 
-        var memoryAvailable = usableTools.Any(t =>
-            string.Equals(t.Group, "memory", StringComparison.OrdinalIgnoreCase));
-        if (memoryAvailable)
-        {
-            sb.AppendLine();
-            sb.AppendLine(_templates.Section(Tpl, "memory_guidance"));
-        }
+        bool Usable(string name) => usableTools.Any(t => t.Name == name);
+        sb.AppendLine();
+        sb.AppendLine(_templates.Section(Tpl, "memory_recent"));
+        if (Usable("search_history")) sb.AppendLine(_templates.Section(Tpl, "memory_search"));
+        if (Usable("upsert_fact")) sb.AppendLine(_templates.Section(Tpl, "memory_write"));
+        if (Usable("delete_fact")) sb.AppendLine(_templates.Section(Tpl, "memory_forget"));
+        if (Usable("upsert_fact") || Usable("delete_fact")) sb.AppendLine(_templates.Section(Tpl, "memory_ack"));
 
         sb.AppendLine();
         sb.AppendLine(_templates.Section(Tpl, "instructions_time",
@@ -305,6 +329,15 @@ public class NyaPromptBuilder
     public string ToolResultDirective()
         => _templates.Section(Tpl, "tool_result_personalize");
 
+    /// <summary>筆記的日期標示：記下（或更新）的日期，有期限時附上到期日。</summary>
+    private static string FactDate(NyaFact fact)
+    {
+        var noted = DateTime.SpecifyKind(fact.CreatedAt, DateTimeKind.Utc).ToLocalTime().ToString("yyyy-MM-dd");
+        return fact.ExpiresAt is { } exp
+            ? $"記於 {noted}，到 {DateTime.SpecifyKind(exp, DateTimeKind.Utc).ToLocalTime():yyyy-MM-dd}"
+            : $"記於 {noted}";
+    }
+
     /// <summary>當前日期時間（伺服器時區；時區可配置屬後續擴展點）。</summary>
     private static string NowText()
     {
@@ -320,6 +353,7 @@ public class NyaPromptBuilder
         List<NyaFact> activeFacts,
         List<NyaSummary> activeSummaries,
         IReadOnlyList<NyaToolSchema> usableTools,
+        IReadOnlyList<(NyaToolSchema Schema, string Reason)> unavailableTools,
         IReadOnlyList<NyaTopicEntry> availableTopics,
         string currentTopicId)
     {
@@ -357,7 +391,7 @@ public class NyaPromptBuilder
 
         // ── 能力邊界（5B/5E：動態）─────────────────────────────────────────
         sb.AppendLine("<system_capabilities>");
-        sb.AppendLine(BuildCapabilities(usableTools));
+        sb.AppendLine(BuildCapabilities(usableTools, unavailableTools));
         sb.AppendLine("</system_capabilities>");
         sb.AppendLine();
 
@@ -380,11 +414,13 @@ public class NyaPromptBuilder
                 };
                 sb.AppendLine(label);
                 foreach (var fact in group)
-                    sb.AppendLine($"  {fact.FactKey}: {fact.FactValue}");
+                    sb.AppendLine($"  {fact.FactKey}: {fact.FactValue}（{FactDate(fact)}）");
             }
 
             sb.AppendLine();
             sb.AppendLine(_templates.Section(Tpl, "facts_guidance"));
+            if (usableTools.Any(t => t.Name is "upsert_fact" or "delete_fact"))
+                sb.AppendLine(_templates.Section(Tpl, "facts_guidance_edit"));
             sb.AppendLine("</long_term_facts>");
             sb.AppendLine();
         }

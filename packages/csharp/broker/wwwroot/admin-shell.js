@@ -29,6 +29,7 @@
         { label: '稽核日誌', href: NYA + '#audit', icon: 'log', keys: '錯誤 紀錄 log' },
       ] },
       { label: '設定', items: [
+        { label: '對話設定', href: NYA + '#settings', icon: 'list', keys: '對話 記憶 上下文 token 預算' },
         { label: 'Soul 人格', href: NYA + '#souls', icon: 'user', keys: 'soul 語氣 規則 prompt' },
         { label: '工具', href: NYA + '#tools', icon: 'zap', keys: '工具 搜尋 交通 開關' },
         { label: 'LLM 模型', href: NYA + '#llm', icon: 'cpu', keys: '模型 金鑰 api key provider 路由' },

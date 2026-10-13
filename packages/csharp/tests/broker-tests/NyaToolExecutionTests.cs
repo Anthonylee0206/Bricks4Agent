@@ -252,20 +252,20 @@ public static class NyaToolExecutionTests
 
     private static void TestDisabledToolStillExposed()
     {
-        Console.WriteLine("--- disabled tool is STILL exposed to LLM (item 7) ---");
+        Console.WriteLine("--- disabled tool is NOT exposed to LLM ---");
         var registry = Registry(new AllowAllToolAuthorizer(), new FakePlugin(Schema("off", defaultEnabled: false)));
         var llm = registry.BuildLlmTools("u1", "line").Select(t => t.Function.Name).ToList();
-        AssertTrue("disabled-exposed", llm.Contains("off"));
+        AssertTrue("disabled-not-exposed", !llm.Contains("off"));
         var ok = registry.TryGetExecutablePlugin("off", "u1", "line", out _, out _, out var st);
         AssertTrue("disabled-not-exec", !ok && st == "disabled");
     }
 
     private static void TestUnauthorizedToolStillExposed()
     {
-        Console.WriteLine("--- unauthorized tool is STILL exposed to LLM (item 7) ---");
+        Console.WriteLine("--- unauthorized tool is NOT exposed to LLM ---");
         var registry = Registry(new DenyToolAuthorizer("secret"), new FakePlugin(Schema("secret")));
         var llm = registry.BuildLlmTools("u1", "line").Select(t => t.Function.Name).ToList();
-        AssertTrue("unauth-exposed", llm.Contains("secret"));
+        AssertTrue("unauth-not-exposed", !llm.Contains("secret"));
         var ok = registry.TryGetExecutablePlugin("secret", "u1", "line", out _, out _, out var st);
         AssertTrue("unauth-not-exec", !ok && st == "not_authorized");
     }

@@ -81,6 +81,7 @@ public static class NyaChatServiceCollectionExtensions
         services.AddSingleton<NyaToolEnableStore>();
         services.AddSingleton<NyaToolRegistry>();
         services.AddNyaTool<FactToolPlugin>();                       // 內建：upsert_fact / delete_fact
+        services.AddNyaTool<HistorySearchToolPlugin>();
         services.AddNyaTool<TopicToolPlugin>();                      // 內建話題操作插件：new_topic / switch_topic / rename_topic
         // Nya 內建 fallback：一律允許。broker 在 Program.cs 以 BrokerToolAuthorizer 覆蓋（最後註冊者勝）。
         services.AddSingleton<INyaToolAuthorizer, AllowAllToolAuthorizer>();

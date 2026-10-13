@@ -577,7 +577,8 @@ public class HighLevelCoordinator
                 new NyaAbstractions.NyaChatRequest { ChannelType = channel, ChannelUserId = userId, Message = chatInput },
                 cancellationToken);
 
-            var nyaReply = PrepareReplySafe(profile, trimmed, nyaResult.Replies.FirstOrDefault() ?? "");
+            profile.LastInteractionAt = DateTimeOffset.UtcNow;
+            var nyaReply = nyaResult.Replies.FirstOrDefault() ?? "";
             SaveUserProfile(channel, userId, profile);
             return FinalizeResult(channel, userId, envelope, trustedParse, workflow, new HighLevelProcessResult
             {

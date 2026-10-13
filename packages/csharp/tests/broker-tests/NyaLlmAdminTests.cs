@@ -22,6 +22,7 @@ public static class NyaLlmAdminTests
         TestSecretRoundTripAndMask();
         TestStoreEncryptsApiKeyAtRest();
         TestLlmChangesWriteWebVisibleAudit();
+        TestHotConfigAndEffectiveSampling();
 
         Console.WriteLine();
         Console.WriteLine($"=== LLM Admin Test Results: {_passed} passed, {_failed} failed ===");
@@ -47,13 +48,55 @@ public static class NyaLlmAdminTests
     {
         Console.WriteLine("--- provider templates: four families map to provider + defaults ---");
         var t = NyaLlmProviderTemplates.All;
-        AssertEqual("template-count", 4, t.Count);
+        AssertEqual("template-count", 5, t.Count);
         var chatgpt = t.First(x => x.Id == "chatgpt");
         AssertEqual("chatgpt-provider", "openai_chat", chatgpt.Provider);
         AssertEqual("claude-provider", "anthropic", t.First(x => x.Id == "claude").Provider);
         AssertEqual("gemini-provider", "gemini", t.First(x => x.Id == "gemini").Provider);
         AssertEqual("local-provider", "ollama", t.First(x => x.Id == "local").Provider);
         AssertTrue("chatgpt-has-defaults", chatgpt.DefaultParams.ContainsKey("temperature"));
+        AssertEqual("lmstudio-provider", "openai_chat", t.First(x => x.Id == "lmstudio").Provider);
+        foreach (var template in t)
+            AssertTrue("template-full-endpoint-" + template.Id, new Uri(template.DefaultBaseUrl).AbsolutePath.Trim('/').Length > 0);
+    }
+
+    private static void TestHotConfigAndEffectiveSampling()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"nya_hot_config_{Guid.NewGuid():N}.db");
+        try
+        {
+            using var db = BrokerDb.UseSqlite($"Data Source={path};Pooling=False");
+            var config = new NyaChatConfigStore(new NyaChatConfig { AuditEnabled = false }, db, NullLogger<NyaChatConfigStore>.Instance);
+            using var patch = System.Text.Json.JsonDocument.Parse("{\"ShortTermMessageLimit\":1000,\"DefaultMaxContextTokens\":131072}");
+            config.PatchAsync(patch.RootElement, "console-admin", "super_admin", default).GetAwaiter().GetResult();
+            AssertEqual("hot-message-limit", 1000, config.Current.ShortTermMessageLimit);
+            AssertEqual("hot-context-budget", 131072, config.Current.DefaultMaxContextTokens);
+            AssertEqual("hot-preserves-other-fields", 2048, config.Current.MaxOutputTokens);
+            AssertTrue("hot-audit-even-disabled", db.GetAll<NyaAuditLog>().Any(l => l.Action == "config_update" && l.DetailJson.Contains("console-admin")));
+            var reloaded = new NyaChatConfigStore(new NyaChatConfig { MaxToolRounds = 5 }, db, NullLogger<NyaChatConfigStore>.Instance);
+            AssertEqual("hot-reload-overrides", 1000, reloaded.Current.ShortTermMessageLimit);
+            AssertEqual("hot-reload-unoverridden-default", 5, reloaded.Current.MaxToolRounds);
+            config.ResetAsync("console-admin", "super_admin", default).GetAwaiter().GetResult();
+            AssertEqual("hot-reset-to-seed", 200, config.Current.ShortTermMessageLimit);
+            AssertTrue("hot-reset-drops-row", db.Get<NyaConfigEntry>("nya:chat") == null);
+            var entry = new NyaLlmProfileEntry
+            {
+                ProfileId = "sampling", Provider = "openai_chat", Model = "model",
+                ParamsJson = "{\"temperature\":0.8,\"presence_penalty\":0.4,\"model_overrides\":{\"temperature\":0.2,\"presence_penalty\":1.5,\"top_k\":20}}"
+            };
+            var profile = entry.ToProfile();
+            var sampling = NyaLlmAdminSettings.Sampling(profile, new NyaLlmRequest { Temperature = profile.Temperature, TopP = profile.TopP });
+            AssertEqual("effective-overrides-temperature", 0.2, sampling["temperature"]!.GetValue<double>());
+            AssertEqual("effective-overrides-penalty", 1.5, sampling["presence_penalty"]!.GetValue<double>());
+            AssertEqual("effective-freeform-param", 20d, sampling["top_k"]!.GetValue<double>());
+            AssertEqual("real-call-site-count", 4, NyaLlmAdminSettings.CallSites.Count);
+            AssertTrue("no-tool-call-sites", NyaLlmAdminSettings.CallSites.All(s => !s.StartsWith("tool:")));
+        }
+        finally
+        {
+            foreach (var file in new[] { path, path + "-shm", path + "-wal" })
+                if (File.Exists(file)) File.Delete(file);
+        }
     }
 
     private static void TestSecretRoundTripAndMask()

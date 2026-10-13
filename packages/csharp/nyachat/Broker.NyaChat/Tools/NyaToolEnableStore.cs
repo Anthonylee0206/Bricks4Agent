@@ -44,8 +44,15 @@ public sealed class NyaToolEnableStore
     {
         lock (_lock)
         {
+            var hadOverride = _overrides.TryGetValue(toolName, out var previous);
             _overrides[toolName] = enabled;
-            Save();
+            try { Save(); }
+            catch
+            {
+                if (hadOverride) _overrides[toolName] = previous;
+                else _overrides.Remove(toolName);
+                throw;
+            }
         }
     }
 
@@ -103,6 +110,7 @@ public sealed class NyaToolEnableStore
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "[NyaToolEnableStore] Failed to save to {Path}", _configPath);
+            throw;
         }
     }
 }

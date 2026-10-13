@@ -8,6 +8,7 @@ function PageD({ onNavigate, initialResult = '' }) {
   const [result, setResult]   = useState(initialResult);
   const [logs, setLogs]       = useState([]);
   const [total, setTotal]     = useState(0);
+  const [writeFailures, setWriteFailures] = useState(null);
   const [loading, setLoading] = useState(false);
   const [limit, setLimit]     = useState(50);
   const [offset, setOffset]   = useState(0);
@@ -30,7 +31,7 @@ function PageD({ onNavigate, initialResult = '' }) {
     if (k.trim())   filters.keyword = k.trim();
     if (r)          filters.result  = r;
     const res = await apiCall('GET', 'audit', { ...filters, limit: l, offset: o });
-    if (res.success) { setLogs(res.data.logs); setTotal(res.data.total); setApplied(filters); }
+    if (res.success) { setLogs(res.data.logs); setTotal(res.data.total); setApplied(filters); setWriteFailures(res.data.write_failure_count); }
     setLoading(false);
   }
 
@@ -38,7 +39,7 @@ function PageD({ onNavigate, initialResult = '' }) {
   async function handleDeleteOne(logId) {
     const ok = await showConfirm('刪除此筆稽核日誌？', '此操作不可還原。');
     if (!ok) return;
-    const res = await apiCall('DELETE', `audit/${logId}`);
+    const res = await apiCall('DELETE', `audit/${encodeURIComponent(logId)}`);
     if (res.success) { showToast('已刪除 1 筆稽核日誌', 'success'); doQuery(userId, action, keyword, limit, offset); }
   }
 
@@ -68,10 +69,12 @@ function PageD({ onNavigate, initialResult = '' }) {
         <Button variant="danger" size="sm" icon="trash" onClick={handleClearAll} disabled={total === 0}>{filtered ? '清空符合條件' : '清空全部'}</Button>
       </Toolbar>
 
+      <AuditWriteFailures count={writeFailures} />
+
       <div style={{ flex: 1, overflow: 'auto', background: 'var(--c-surface)' }}>
         {loading && logs.length === 0
           ? <EmptyState loading />
-          : <AuditLog logs={logs} loading={loading} showUser onUserClick={uid => onNavigate('user/' + uid)} onDelete={handleDeleteOne} />
+          : <AuditLog logs={logs} loading={loading} showUser onUserClick={uid => onNavigate('user/' + encodeURIComponent(uid))} onDelete={handleDeleteOne} />
         }
       </div>
 

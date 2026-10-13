@@ -19,9 +19,11 @@ public sealed class NyaToolResult
     /// <summary>可選：略過 LLM 直接回給使用者的訊息（可多段）。null = 一律走二次 LLM 回覆。</summary>
     public IReadOnlyList<string>? DirectReplies { get; init; }
 
+    public bool RequiresExactOutput { get; init; }
+
     /// <summary>成功結果便利建構子。</summary>
-    public static NyaToolResult Ok(string llmContent, IReadOnlyList<string>? directReplies = null)
-        => new() { Success = true, LlmContent = llmContent, DirectReplies = directReplies };
+    public static NyaToolResult Ok(string llmContent, IReadOnlyList<string>? directReplies = null, bool requiresExactOutput = false)
+        => new() { Success = true, LlmContent = llmContent, DirectReplies = directReplies, RequiresExactOutput = requiresExactOutput };
 
     /// <summary>失敗結果便利建構子（訊息仍回饋給 LLM，使其能向使用者說明失敗原因）。</summary>
     public static NyaToolResult Fail(string llmContent)

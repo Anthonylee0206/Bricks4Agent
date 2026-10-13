@@ -10,6 +10,19 @@ namespace Broker.NyaChat;
 /// </summary>
 public class NyaAuditLogger
 {
+    private static readonly AsyncLocal<object?> _operator = new();
+
+    public IDisposable BeginAdminOperation(string username, string role)
+    {
+        var previous = _operator.Value;
+        _operator.Value = new { username, role };
+        return new OperatorScope(previous);
+    }
+
+    private sealed class OperatorScope(object? previous) : IDisposable
+    {
+        public void Dispose() => _operator.Value = previous;
+    }
     private readonly BrokerDb _db;
     private readonly INyaConfigStore<NyaChatConfig> _configStore;
     private NyaChatConfig _config => _configStore.Current; // 當前配置快照
@@ -157,8 +170,11 @@ public class NyaAuditLogger
     public void LogToolToggle(string toolId, bool enabled)
         => Write("__sys__", "tool_toggle", new { tool_id = toolId, enabled });
 
-    public void LogSoulChange(string action, string soulId)
-        => Write("__sys__", action, new { soul_id = soulId });
+    public void LogSoulChange(string action, string? soulId, string? userId = null)
+        => Write(userId ?? "__sys__", action, new { soul_id = soulId, target_user_id = userId });
+
+    public void LogReload(string action, int loaded, object? failures = null, string result = "success")
+        => Write("__sys__", action, new { loaded, failures }, result);
 
     /// <summary>記錄可重載配置的更新，changedKeys 為本次覆寫的欄位名。</summary>
     public void LogConfigUpdate(IReadOnlyList<string> changedKeys)
@@ -289,14 +305,16 @@ public class NyaAuditLogger
 
         try
         {
+            var details = JsonSerializer.SerializeToNode(detail) as System.Text.Json.Nodes.JsonObject
+                ?? new System.Text.Json.Nodes.JsonObject();
+            if (_operator.Value != null)
+                details["operator"] = JsonSerializer.SerializeToNode(_operator.Value);
             var log = new NyaAuditLog
             {
                 LogId = $"nyal_{Guid.NewGuid():N}"[..24],
                 UserId = userId,
                 Action = action,
-                DetailJson = detail != null
-                    ? JsonSerializer.Serialize(detail)
-                    : "{}",
+                DetailJson = details.ToJsonString(),
                 Result = result,
                 TraceId = traceId ?? "",
                 CreatedAt = DateTime.UtcNow

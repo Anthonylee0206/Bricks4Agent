@@ -6,6 +6,18 @@ function parseParamsJson(raw) {
   try { return JSON.parse(raw || '{}'); } catch { return {}; }
 }
 
+const PARAM_LABELS = {
+  temperature: '溫度 temperature',
+  top_p: 'Top-p',
+  max_context_tokens: '最大上下文 token',
+  timeout_seconds: '逾時秒數',
+  enable_thinking: '開啟思考',
+  thinking_budget: '思考 token 預算',
+  frequency_penalty: '頻率懲罰',
+  presence_penalty: '存在懲罰',
+  repeat_penalty: '重複懲罰',
+};
+
 // ── Profile 編輯器 ─────────────────────────────────────────────────────────────
 function ProfileEditor({ profileId, templates, catalog, onSave, onCancel, saving }) {
   const isNew = !profileId;
@@ -146,9 +158,9 @@ function ProfileEditor({ profileId, templates, catalog, onSave, onCancel, saving
                 <Input value={form.provider} onChange={v => setForm(f => ({ ...f, provider: v }))}
                   placeholder="例：openai_chat / anthropic / ollama / gemini" mono />
               </FieldRow>
-              <FieldRow label="Base URL">
+              <FieldRow label="Base URL" hint="完整 API 端點：openai_chat 使用 /v1/chat/completions；ollama 使用 /api/chat。">
                 <Input value={form.base_url} onChange={v => setForm(f => ({ ...f, base_url: v }))}
-                  placeholder="例：https://api.openai.com" mono />
+                  placeholder="例：http://localhost:1234/v1/chat/completions" mono />
               </FieldRow>
               <FieldRow label="API Key" hint="留空或含 * 則保留原有金鑰">
                 <Input type="password" value={form.api_key}
@@ -171,9 +183,8 @@ function ProfileEditor({ profileId, templates, catalog, onSave, onCancel, saving
           <Panel title="常用參數">
             <div style={{ padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: 10 }}>
               {commonParams.map(spec => (
-                <FieldRow key={spec.key} label={spec.key}
-                  hint={spec.doc}
-                  mono>
+                <FieldRow key={spec.key} label={PARAM_LABELS[spec.key] || spec.key}
+                  hint={spec.doc}>
                   {spec.type === 'bool'
                     ? <Checkbox
                         checked={!!obj[spec.key]}
@@ -233,6 +244,15 @@ function ProfileEditor({ profileId, templates, catalog, onSave, onCancel, saving
               </div>
             </div>
           </Panel>
+          {origProfile?.effective && <Panel title="已儲存 Profile 的實際參數">
+            <div style={{ padding: 14, color: 'var(--c-fg2)', fontSize: 12 }}>
+              <div>{origProfile.effective.precedence}</div>
+              <div>取樣落點：{origProfile.effective.sampling_location}</div>
+              <pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{JSON.stringify(origProfile.effective.sampling, null, 2)}</pre>
+              <div>思考欄位：{JSON.stringify(origProfile.effective.thinking)}</div>
+              <div>{origProfile.effective.output_limit}</div>
+            </div>
+          </Panel>}
         </div>
       </ContentArea>
     </div>
@@ -258,6 +278,15 @@ function FieldRow({ label, hint, required, children, mono }) {
 function ProfilesView({ templates, catalog, onEdit, onAdd }) {
   const [profiles, setProfiles] = useState([]);
   const [loading, setLoading]   = useState(false);
+  const [testing, setTesting] = useState(null);
+  const [testResults, setTestResults] = useState({});
+
+  async function testProfile(p) {
+    setTesting(p.profile_id);
+    const res = await apiCall('POST', `llm/profiles/${encodeURIComponent(p.profile_id)}/test`, {});
+    setTestResults(results => ({ ...results, [p.profile_id]: res.success ? res.data : { ok: false, error: res.message } }));
+    setTesting(null);
+  }
 
   async function load() {
     setLoading(true);
@@ -270,9 +299,9 @@ function ProfilesView({ templates, catalog, onEdit, onAdd }) {
 
   async function handleDelete(p) {
     const ok = await showConfirm('刪除 Profile',
-      `確定要刪除 Profile "${p.profile_id}" 嗎？已指向此 Profile 的路由將回退到預設。`);
+      `確定要刪除 Profile "${p.profile_id}" 嗎？受影響的呼叫點：${(p.call_sites || []).join('、') || '無'}。已指向此 Profile 的路由將回退到 __default__。系統預設使用中的 Profile 無法刪除。`);
     if (!ok) return;
-    const res = await apiCall('DELETE', `llm/profiles/${p.profile_id}`);
+    const res = await apiCall('DELETE', `llm/profiles/${encodeURIComponent(p.profile_id)}`);
     if (res.success) {
       showToast(`Profile "${p.profile_id}" 已刪除`, 'success');
       load();
@@ -301,7 +330,9 @@ function ProfilesView({ templates, catalog, onEdit, onAdd }) {
                     { label: 'Model' },
                     { label: 'Template',   width: 120 },
                     { label: 'API Key',    width: 140 },
-                    { label: '',           width: 140, center: true },
+                    { label: '使用中的呼叫點', width: 180 },
+                    { label: '實際取樣參數', width: 220 },
+                    { label: '操作 / 連線測試', width: 260, center: true },
                   ]}>
                     {profiles.map(p => (
                       <TR key={p.profile_id}>
@@ -310,14 +341,28 @@ function ProfilesView({ templates, catalog, onEdit, onAdd }) {
                         <TD mono>{p.model}</TD>
                         <TD mono muted>{p.template || '—'}</TD>
                         <TD mono muted style={{ fontSize: 11 }}>{p.api_key || '—'}</TD>
+                        <TD mono>{(p.call_sites || []).join('、') || '未使用'}</TD>
+                        <TD>
+                          <details>
+                            <summary>實際送出（{p.effective?.sampling_location}）</summary>
+                            <pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{JSON.stringify(p.effective?.sampling, null, 2)}</pre>
+                            <div>思考欄位：{JSON.stringify(p.effective?.thinking)}</div>
+                          </details>
+                        </TD>
                         <TD center>
                           <div style={{ display: 'flex', gap: 6, justifyContent: 'center' }}>
                             <Button variant="ghost" size="sm" icon="edit"
                               onClick={() => onEdit(p.profile_id)}>編輯</Button>
+                            <Button variant="secondary" size="sm" loading={testing === p.profile_id} disabled={testing !== null}
+                              onClick={() => testProfile(p)}>測試連線</Button>
                             <Button variant="ghost" size="sm" icon="trash"
                               style={{ color: 'var(--c-danger)' }}
                               onClick={() => handleDelete(p)} />
                           </div>
+                          {testResults[p.profile_id] && <div role="status" style={{ fontSize: 12, color: testResults[p.profile_id].ok ? 'var(--c-accent-fg)' : 'var(--c-danger)' }}>
+                            {testResults[p.profile_id].ok ? '連線成功' : testResults[p.profile_id].error}
+                            {testResults[p.profile_id].latency_ms !== undefined && ` · ${testResults[p.profile_id].latency_ms} ms`}
+                          </div>}
                         </TD>
                       </TR>
                     ))}
@@ -349,7 +394,7 @@ function RoutingView() {
     if (prRes.success) setProfiles(prRes.data || []);
     if (rtRes.success) {
       const map = {};
-      for (const r of (rtRes.data || [])) map[r.call_site_id] = r.profile_id;
+      for (const r of (rtRes.data || [])) map[r.call_site_id] = r;
       setRoutes(map);
     }
     setLoading(false);
@@ -361,7 +406,7 @@ function RoutingView() {
     setSaving(p => ({ ...p, [callSiteId]: true }));
     const res = await apiCall('PUT', 'llm/routes', { call_site_id: callSiteId, profile_id: profileId });
     if (res.success) {
-      setRoutes(r => ({ ...r, [callSiteId]: profileId }));
+      await load();
       showToast(`路由 ${callSiteId} → ${profileId} 已更新`, 'success');
     }
     setSaving(p => ({ ...p, [callSiteId]: false }));
@@ -393,31 +438,34 @@ function RoutingView() {
                     { label: 'Call Site',  width: 260 },
                     { label: '種類',       width: 100 },
                     { label: 'Profile 指派' },
+                    { label: '目前實際使用', width: 280 },
                     { label: '狀態',       width: 80, center: true },
                   ]}>
                     {callSites.map(cs => {
-                      const isToolSite = cs.startsWith('tool:');
-                      const current = routes[cs] || '__default__';
+                      const resolved = routes[cs];
+                      const current = resolved?.profile_id || '__default__';
                       return (
                         <TR key={cs}>
                           <TD mono style={{ fontWeight: current !== '__default__' ? 600 : 400 }}>{cs}</TD>
                           <TD>
-                            {isToolSite
-                              ? <Badge color="var(--c-fg2)">工具</Badge>
-                              : <Badge color="var(--c-accent-fg)">內建</Badge>
-                            }
+                            <Badge color="var(--c-accent-fg)">{cs === '__default__' ? '系統預設' : '內建'}</Badge>
                           </TD>
                           <TD>
                             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                               <Select
                                 value={current}
-                                options={profileOptions}
+                                options={cs === '__default__' ? profileOptions.filter(p => p.value !== '__default__') : profileOptions}
                                 onChange={v => handleRouteChange(cs, v)}
                                 disabled={saving[cs]}
                                 style={{ minWidth: 280 }}
                               />
                               {saving[cs] && <Spinner size={14} />}
                             </div>
+                          </TD>
+                          <TD>
+                            <div className="mono">{resolved?.effective_profile_id || '未設定'}</div>
+                            <div style={{ fontSize: 12, color: 'var(--c-fg2)' }}>{resolved?.provider} · {resolved?.model}</div>
+                            {resolved?.source === '__default__' && cs !== '__default__' && <div>回退至系統預設</div>}
                           </TD>
                           <TD center>
                             {current === '__default__'
@@ -433,7 +481,7 @@ function RoutingView() {
         </Panel>
 
         <div style={{ fontSize: 12, color: 'var(--c-fg2)', lineHeight: 1.7, padding: '0 2px' }}>
-          「預設」表示未指定 profile，系統使用 <code>__default__</code> profile（若存在）或全域設定中的 provider/model。
+          「預設」表示未指定路由，系統使用 <code>__default__</code> 路由指向的 Profile。
           更改後立即生效，無需重啟。
         </div>
       </ContentArea>
@@ -467,7 +515,7 @@ function PageG() {
   async function handleSave(payload, isNew) {
     setSaving(true);
     const method = isNew ? 'POST' : 'PUT';
-    const path   = isNew ? 'llm/profiles' : `llm/profiles/${payload.profile_id}`;
+    const path   = isNew ? 'llm/profiles' : `llm/profiles/${encodeURIComponent(payload.profile_id)}`;
     const res = await apiCall(method, path, payload);
     setSaving(false);
     if (res.success) {

@@ -251,12 +251,19 @@ public sealed class NyaPromptTemplateProvider : IDisposable
                     ["behavior_directive"] = "請直接、簡潔地回答，不要逐步說明你的思考過程或逐步推理。",
                     ["capabilities_can_header"]   = "你目前具備以下能力：",
                     ["capabilities_limit_header"] = "以下是你的能力邊界，請誠實說明（不要假裝可以做到）：",
-                    // 5C：記憶操作指引（行為導引，非工具 schema；不重複 function-calling 描述）
-                    ["memory_guidance"] = "記憶操作指引：\n- 主動記住使用者提到的重要資訊（姓名、偏好、待辦事項等）\n- 不需要告訴使用者你正在呼叫工具，自然地完成後確認即可\n- 若資訊已失效主動移除，若有新資訊主動更新",
                     // 5D：時間感知
                     ["instructions_time"] = "現在時間：{current_datetime}",
-                    ["facts_intro"]    = "以下是你記住的使用者資訊（長期記憶，跨對話持久保存）：",
-                    ["facts_guidance"] = "請主動利用這些記憶回覆。若資訊已失效，用 delete_fact 移除；若有新資訊，用 upsert_fact 更新。",
+                    ["facts_intro"]    = "你記下的關於這位使用者的筆記（括號內是記下的日期）：",
+                    ["facts_guidance"] = "只在和目前話題相關時自然運用這些筆記，不要每次都提起，也不要背誦筆記清單。",
+                    ["capabilities_closed_header"] = "目前沒有開放的功能（被問到時照實說目前沒開放與原因，不要說你不會，也不要假裝做得到）：",
+                    ["capabilities_status_note"] = "上面「具備的能力」就是你這次能用的全部工具；需要外部資料或執行動作時就呼叫對應的工具。",
+                    ["topics_header"] = "這位使用者的話題（話題只是整理用的標籤，切換話題不會讓你忘記剛才的對話；用 switch_topic 切換，傳入 topic_id 或標題）：",
+                    ["memory_recent"] = "記憶：\n- 上面的對話紀錄是你和這位使用者最近的對話（太長時較早的部分會被截掉；隔了一段時間的訊息前面標有日期時間）。回答「剛才」「上一句」直接看它。",
+                    ["memory_search"] = "- 使用者提到更早聊過的事，而上面的對話裡沒有時，用 search_history 查原始對話；可以換關鍵字多查幾次，查不到就說查不到，不要猜。",
+                    ["memory_write"] = "- 使用者明確說出、之後仍會用到的事（稱呼、身分、長期偏好、明確要你記住的事），用 upsert_fact 記下，並把使用者原話放進 source_text。只是查一次資料、問一個問題、開玩笑或一時的情緒，不要推論成偏好。有期限的近況（例如明天要面試）填 expires_in_days。",
+                    ["memory_forget"] = "- 使用者要你忘記、說記錯了，或資訊已不再成立，用 delete_fact 遺忘。",
+                    ["memory_ack"] = "- 記下或遺忘時不用特別宣告，自然帶過即可；只有工具回傳成功才可以說已經記住或忘掉。",
+                    ["facts_guidance_edit"] = "內容過時或有誤時，用 upsert_fact 更正或 delete_fact 遺忘。",
                     ["summaries_intro"] = "以下是過去對話的摘要（長期記憶，供你理解脈絡）：",
                     // Doc 2：任務層程序性收尾（三層之末、最明確）。
                     // 防幻覺：沒有對應工具執行結果卻聲稱用過工具 = 胡言亂語。

@@ -25,10 +25,17 @@ public class NyaMemoryService
         _db.EnsureTable<NyaSummary>();
         _db.EnsureTable<NyaTopic>();
         _db.EnsureTable<NyaSoulBinding>();
+        _db.EnsureTable<NyaForgotten>();
+        EnsureColumn("nya_forgotten", "match_terms", "TEXT");
+        EnsureColumn("nya_forgotten", "through_sequence", "INTEGER");
+        try { _db.Execute("CREATE INDEX IF NOT EXISTS ix_nya_messages_user_seq ON nya_messages(user_id, sequence)"); }
+        catch (Exception ex) { _logger.LogWarning(ex, "[NyaMemory] create index failed"); }
 
         // 摘要依話題獨立→ nya_summaries 新增 topic_id。EnsureTable 為
         // CREATE TABLE IF NOT EXISTS，不會替既有表加欄；對舊資料庫做加性遷移（冪等）。
         EnsureColumn("nya_summaries", "topic_id", "TEXT");
+        EnsureColumn("nya_facts", "source_text", "TEXT");
+        EnsureColumn("nya_facts", "expires_at", "TEXT");
     }
 
     /// <summary>若指定表缺少該欄則 ALTER TABLE 加上（加性、冪等遷移）。</summary>
@@ -91,14 +98,15 @@ public class NyaMemoryService
     /// 取最近 N 則有效訊息（未刪除、未摘要）送入 LLM context。
     /// 被摘要涵蓋的訊息不會出現在這裡，確保不重複喂進 LLM。
     /// </summary>
-    public List<NyaMessage> GetRecentMessages(string userId, int? limit = null)
+    public List<NyaMessage> GetRecentMessages(string userId, int? limit = null, bool includeSummarized = false)
     {
         var lim = limit ?? _config.ShortTermMessageLimit;
+        var inc = includeSummarized ? 1 : 0;
         return _db.Query<NyaMessage>(
             @"SELECT * FROM nya_messages
-              WHERE user_id = @userId AND is_deleted = 0 AND is_summarized = 0
+              WHERE user_id = @userId AND is_deleted = 0 AND (@inc = 1 OR is_summarized = 0)
               ORDER BY sequence DESC LIMIT @lim",
-            new { userId, lim })
+            new { userId, lim, inc })
             .OrderBy(m => m.Sequence)
             .ToList();
     }
@@ -107,14 +115,15 @@ public class NyaMemoryService
     /// 取某話題最近 N 則有效訊息（對話依話題獨立）。
     /// 僅回傳該 topicId 的訊息，使切換話題後 LLM context 不混入其他話題。
     /// </summary>
-    public List<NyaMessage> GetRecentMessages(string userId, string topicId, int? limit = null)
+    public List<NyaMessage> GetRecentMessages(string userId, string topicId, int? limit = null, bool includeSummarized = false)
     {
         var lim = limit ?? _config.ShortTermMessageLimit;
+        var inc = includeSummarized ? 1 : 0;
         return _db.Query<NyaMessage>(
             @"SELECT * FROM nya_messages
-              WHERE user_id = @userId AND topic_id = @topicId AND is_deleted = 0 AND is_summarized = 0
+              WHERE user_id = @userId AND topic_id = @topicId AND is_deleted = 0 AND (@inc = 1 OR is_summarized = 0)
               ORDER BY sequence DESC LIMIT @lim",
-            new { userId, topicId, lim })
+            new { userId, topicId, lim, inc })
             .OrderBy(m => m.Sequence)
             .ToList();
     }
@@ -418,10 +427,14 @@ public class NyaMemoryService
         string factKey,
         string factValue,
         string? sourceMessageId = null,
-        float confidence = 1.0f)
+        float confidence = 1.0f,
+        string? sourceText = null,
+        DateTime? expiresAt = null)
     {
         return _db.InTransaction(() =>
         {
+            _db.Execute("DELETE FROM nya_forgotten WHERE user_id = @userId AND fact_key = @factKey", new { userId, factKey });
+
             var existing = _db.Query<NyaFact>(
                 "SELECT * FROM nya_facts WHERE user_id = @userId AND fact_key = @factKey ORDER BY version DESC",
                 new { userId, factKey });
@@ -447,6 +460,8 @@ public class NyaMemoryService
                 FactValue = factValue,
                 Confidence = confidence,
                 SourceMessageId = sourceMessageId,
+                SourceText = sourceText,
+                ExpiresAt = expiresAt,
                 Version = nextVersion,
                 IsActive = true,
                 CreatedAt = DateTime.UtcNow
@@ -492,9 +507,14 @@ public class NyaMemoryService
 
     /// <summary>取所有當前生效事實</summary>
     public List<NyaFact> GetActiveFacts(string userId)
-        => _db.Query<NyaFact>(
-            "SELECT * FROM nya_facts WHERE user_id = @userId AND is_active = 1 ORDER BY category, fact_key",
-            new { userId });
+    {
+        var now = DateTime.UtcNow;
+        return _db.Query<NyaFact>(
+                "SELECT * FROM nya_facts WHERE user_id = @userId AND is_active = 1 ORDER BY category, fact_key",
+                new { userId })
+            .Where(f => f.ExpiresAt == null || f.ExpiresAt > now)
+            .ToList();
+    }
 
     /// <summary>依分類取生效事實</summary>
     public List<NyaFact> GetFactsByCategory(string userId, string category)
@@ -597,6 +617,157 @@ public class NyaMemoryService
         });
     }
 
+    /// <summary>
+    /// 遺忘：刪除該筆記的所有版本並留下遺忘紀錄（含各版本內容與使用者原話）。
+    /// 遺忘之前、內容含這些字串的訊息，之後不會再出現在模型看得到的近期對話與搜尋結果；
+    /// 遺忘之後使用者重新說的話照常可見。回傳是否有可遺忘的筆記。
+    /// </summary>
+    public bool ForgetFact(string userId, string factKey, bool coversPendingTurn = true)
+    {
+        return _db.InTransaction(() =>
+        {
+            var history = GetFactHistory(userId, factKey);
+            if (history.Count == 0) return false;
+            var value = (history.FirstOrDefault(f => f.IsActive) ?? history[0]).FactValue;
+            var terms = history.SelectMany(f => new[] { f.FactValue, f.SourceText })
+                .Where(t => !string.IsNullOrWhiteSpace(t) && t!.Trim().Length >= 2)
+                .Select(t => t!.Trim()).Distinct().ToList();
+            _db.Execute("DELETE FROM nya_facts WHERE user_id = @userId AND fact_key = @factKey", new { userId, factKey });
+            _db.Execute("DELETE FROM nya_forgotten WHERE user_id = @userId AND fact_key = @factKey", new { userId, factKey });
+            foreach (var term in terms)
+                _db.Execute("DELETE FROM nya_summaries WHERE user_id = @userId AND summary_text LIKE @pattern ESCAPE '\\'",
+                    new { userId, pattern = "%" + LikeEscape(term) + "%" });
+            var through = GetNextSequence(userId) - 1 + (coversPendingTurn ? 2 : 0);
+            _db.Insert(new NyaForgotten
+            {
+                ForgetId = $"nyag_{Guid.NewGuid():N}"[..24],
+                UserId = userId,
+                FactKey = factKey,
+                FactValue = value,
+                MatchTermsJson = System.Text.Json.JsonSerializer.Serialize(terms),
+                ThroughSequence = through,
+                CreatedAt = DateTime.UtcNow
+            });
+            return true;
+        });
+    }
+
+    /// <summary>使用者要求遺忘的事項（新→舊）。</summary>
+    public List<NyaForgotten> GetForgotten(string userId)
+        => _db.Query<NyaForgotten>(
+            "SELECT * FROM nya_forgotten WHERE user_id = @userId ORDER BY created_at DESC",
+            new { userId });
+
+    /// <summary>刪除某使用者的所有話題（清除全部記憶時使用）。</summary>
+    public int DeleteAllTopics(string userId)
+        => _db.Execute("DELETE FROM nya_topics WHERE user_id = @userId", new { userId });
+
+    /// <summary>清除某使用者的遺忘紀錄。</summary>
+    public int ClearForgotten(string userId)
+        => _db.Execute("DELETE FROM nya_forgotten WHERE user_id = @userId", new { userId });
+
+    private sealed record ForgetRule(DateTime CreatedAt, long ThroughSequence, IReadOnlyList<string> Terms);
+
+    private List<ForgetRule> ForgetRules(string userId)
+        => GetForgotten(userId).Select(g =>
+        {
+            var terms = new List<string>();
+            try
+            {
+                if (!string.IsNullOrWhiteSpace(g.MatchTermsJson))
+                    terms.AddRange(System.Text.Json.JsonSerializer.Deserialize<List<string>>(g.MatchTermsJson!) ?? new());
+            }
+            catch (System.Text.Json.JsonException) { }
+            if (g.FactValue.Trim().Length >= 2) terms.Add(g.FactValue.Trim());
+            return new ForgetRule(AsUtc(g.CreatedAt), g.ThroughSequence, terms.Distinct().ToList());
+        }).Where(r => r.Terms.Count > 0).ToList();
+
+    private static DateTime AsUtc(DateTime value)
+        => value.Kind switch
+        {
+            DateTimeKind.Utc => value,
+            DateTimeKind.Local => value.ToUniversalTime(),
+            _ => DateTime.SpecifyKind(value, DateTimeKind.Utc)
+        };
+
+    private static bool IsForgotten(NyaMessage message, IReadOnlyList<ForgetRule> rules)
+        => rules.Any(r => (r.ThroughSequence > 0 ? message.Sequence <= r.ThroughSequence : AsUtc(message.CreatedAt) <= r.CreatedAt) &&
+            r.Terms.Any(t => message.Content.Contains(t, StringComparison.OrdinalIgnoreCase)));
+
+    /// <summary>此話題是否為使用者的一般話題（LINE 話題標籤）；外部帶入的明確對話 ID 不在話題表中。</summary>
+    public bool IsUserTopic(string userId, string? topicId)
+        => !string.IsNullOrWhiteSpace(topicId) && _db.Scalar<int>(
+            "SELECT COUNT(*) FROM nya_topics WHERE user_id = @userId AND topic_id = @topicId",
+            new { userId, topicId }) > 0;
+
+    private const string UserTopicScope =
+        "(topic_id IS NULL OR topic_id IN (SELECT topic_id FROM nya_topics WHERE user_id = @userId))";
+
+    /// <summary>
+    /// 模型看得到的近期對話（舊→新）：<paramref name="conversationId"/> 為 null 時取使用者所有一般話題，
+    /// 否則只取該明確對話。已遺忘的內容不會出現。
+    /// </summary>
+    public List<NyaMessage> GetRecentConversation(string userId, string? conversationId, int? limit = null, bool includeSummarized = false)
+    {
+        var lim = limit ?? _config.ShortTermMessageLimit;
+        var scope = conversationId == null ? UserTopicScope : "topic_id = @conversationId";
+        var rules = ForgetRules(userId);
+        return _db.Query<NyaMessage>(
+                $"SELECT * FROM nya_messages WHERE user_id = @userId AND is_deleted = 0 AND (@inc = 1 OR is_summarized = 0) AND {scope} ORDER BY sequence DESC LIMIT @lim",
+                new { userId, conversationId, lim, inc = includeSummarized ? 1 : 0 })
+            .Where(m => !IsForgotten(m, rules))
+            .OrderBy(m => m.Sequence)
+            .ToList();
+    }
+
+    private static string LikeEscape(string term)
+        => term.Replace("\\", "\\\\").Replace("%", "\\%").Replace("_", "\\_");
+
+    /// <summary>
+    /// 搜尋使用者的原始對話（未刪除）。以空白或逗號分隔多個關鍵字，命中越多越前面，同分取較新者；
+    /// <paramref name="conversationId"/> 為 null 時只搜一般話題，否則只搜該明確對話。已遺忘的內容不會回傳。
+    /// 回傳命中訊息與緊接的下一則（下一則若已遺忘或不在同一範圍則為 null）。
+    /// </summary>
+    public List<(NyaMessage Hit, NyaMessage? Next)> SearchConversation(string userId, string query, int limit = 5, string? conversationId = null)
+    {
+        var terms = (query ?? "").Split(new[] { ' ', '\u3000', ',', '\uFF0C', '\u3001' }, StringSplitOptions.RemoveEmptyEntries)
+            .Select(t => t.Trim()).Where(t => t.Length > 0).Distinct().Take(6).ToList();
+        if (terms.Count == 0) return new();
+        var p = new Dictionary<string, object?> { ["userId"] = userId, ["conversationId"] = conversationId };
+        var likes = new List<string>();
+        for (var i = 0; i < terms.Count; i++)
+        {
+            p[$"t{i}"] = "%" + LikeEscape(terms[i]) + "%";
+            likes.Add($"(content LIKE @t{i} ESCAPE '\\')");
+        }
+        var scope = conversationId == null ? UserTopicScope : "topic_id = @conversationId";
+        var rules = ForgetRules(userId);
+        var hits = _db.Query<NyaMessage>(
+                $"SELECT * FROM nya_messages WHERE user_id = @userId AND is_deleted = 0 AND {scope} AND ({string.Join(" OR ", likes)}) " +
+                $"ORDER BY ({string.Join(" + ", likes)}) DESC, sequence DESC LIMIT 500", p)
+            .Where(m => !IsForgotten(m, rules))
+            .Take(Math.Clamp(limit, 1, 20))
+            .ToList();
+        return hits.Select(h =>
+        {
+            var next = _db.Query<NyaMessage>(
+                $"SELECT * FROM nya_messages WHERE user_id = @userId AND is_deleted = 0 AND {scope} AND sequence > @sequence ORDER BY sequence LIMIT 1",
+                new { userId, conversationId, sequence = h.Sequence }).FirstOrDefault();
+            return (h, next != null && !IsForgotten(next, rules) ? next : null);
+        }).ToList();
+    }
+
+    /// <summary>某話題中模型看得到的訊息（排除已遺忘內容），供摘要等模型用途。</summary>
+    public List<NyaMessage> GetModelVisibleMessagesByTopic(string userId, string topicId)
+    {
+        var rules = ForgetRules(userId);
+        return GetMessagesByTopic(userId, topicId).Where(m => !IsForgotten(m, rules)).ToList();
+    }
+
+    /// <summary>相容舊呼叫：只回命中訊息（一般話題範圍）。</summary>
+    public List<NyaMessage> SearchMessages(string userId, string query, int limit = 5)
+        => SearchConversation(userId, query, limit).Select(x => x.Hit).ToList();
+
     /// <summary>硬刪除單一 factKey 的所有版本（包含歷史版本）</summary>
     public int DeleteFact(string userId, string factKey)
         => _db.Execute(
@@ -698,14 +869,13 @@ public class NyaMemoryService
         return _db.InTransaction<NyaSummary?>(() =>
         {
             var history = GetSummaryHistory(userId);
-            var current = history.FirstOrDefault(s => s.IsActive);
             var target = history.FirstOrDefault(s => s.SummaryId == summaryId && !s.IsActive);
 
             if (target == null)
                 return null;
 
-            // 退役當前
-            if (current != null)
+            // 只退役同一話題中生效的摘要（不影響其他話題）
+            foreach (var current in history.Where(s => s.IsActive && string.Equals(s.TopicId, target.TopicId, StringComparison.Ordinal)))
             {
                 _db.Execute(
                     "UPDATE nya_summaries SET is_active = 0, superseded_at = @now WHERE summary_id = @summaryId",
@@ -868,4 +1038,15 @@ public class NyaMemoryService
             new { userId });
         return (maxSeq ?? 0) + 1;
     }
+
+    public bool RemoveSoulBinding(string userId)
+        => _db.Execute("DELETE FROM nya_soul_bindings WHERE user_id = @userId", new { userId }) > 0;
+
+    public List<NyaFact> GetCurrentFacts(string userId)
+        => _db.Query<NyaFact>(
+            "SELECT * FROM nya_facts WHERE user_id = @userId AND is_active = 1 ORDER BY category, fact_key",
+            new { userId });
+
+    public int ClearForgotten(string userId, string factKey)
+        => _db.Execute("DELETE FROM nya_forgotten WHERE user_id = @userId AND fact_key = @factKey", new { userId, factKey });
 }

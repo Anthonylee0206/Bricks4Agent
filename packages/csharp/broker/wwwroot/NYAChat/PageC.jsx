@@ -19,7 +19,7 @@ function PageC({ userId, onNavigate }) {
   const loadOverview = useCallback(async () => {
     setOvLoad(true);
     setOvError(false);
-    const res = await apiCall('GET', `users/${userId}/overview`);
+    const res = await apiCall('GET', `users/${encodeURIComponent(userId)}/overview`);
     if (res.success) {
       setOverview(res.data);
     } else {
@@ -33,7 +33,7 @@ function PageC({ userId, onNavigate }) {
   const [topicCount, setTopicCount] = useState(null);
 
   const loadTopicCount = useCallback(async () => {
-    const res = await apiCall('GET', `users/${userId}/topics`);
+    const res = await apiCall('GET', `users/${encodeURIComponent(userId)}/topics`);
     if (res.success) setTopicCount(res.data.total);
   }, [userId]);
 
@@ -66,7 +66,7 @@ function PageC({ userId, onNavigate }) {
             {userId}
           </h1>
           <Badge>{CHANNEL_LABELS[channelOf(userId)] || channelOf(userId)}</Badge>
-          {overview && <Badge>Soul：{overview.soul_id}</Badge>}
+          {overview && <Badge>Soul：{overview.effective_soul_id}</Badge>}
         </div>
       </div>
 
@@ -94,13 +94,13 @@ function TabC1({ userId, overview, loading, error, onRefresh }) {
     const { messages, facts, summaries } = overview;
     const ok = await showConfirm(
       `清除全部記憶 — ${userId}？`,
-      `將軟刪除 ${messages.active + messages.summarized} 筆訊息、硬刪除 ${facts.total_active} 筆事實、刪除 ${summaries.total_versions} 個摘要。此操作不可還原。`
+      `將軟刪除 ${messages.active + messages.summarized} 筆訊息、硬刪除 ${facts.total_active} 筆事實、刪除 ${summaries.total_versions} 個摘要，並清除話題與遺忘紀錄（Soul 設定保留）。此操作不可還原。`
     );
     if (!ok) return;
     setNuke(true);
-    const res = await apiCall('DELETE', `users/${userId}`, { confirm: 'all' });
+    const res = await apiCall('DELETE', `users/${encodeURIComponent(userId)}`, { confirm: 'all' });
     if (res.success) {
-      showToast(`已清除全部記憶：訊息 ${res.data.soft_deleted_messages}、事實 ${res.data.deleted_facts}、摘要 ${res.data.deleted_summaries}`, 'success');
+      showToast(`已清除全部記憶：訊息 ${res.data.soft_deleted_messages}、事實 ${res.data.deleted_facts}、摘要 ${res.data.deleted_summaries}、話題 ${res.data.deleted_topics}`, 'success');
       onRefresh();
     }
     setNuke(false);
@@ -132,10 +132,16 @@ function TabC1({ userId, overview, loading, error, onRefresh }) {
       {/* Message stat tiles */}
       <StatTiles cols={4} items={[
         { label: '訊息總計', value: m.total },
-        { label: '有效（LLM 可見）', value: m.active, accent: 'var(--c-accent-fg)' },
+        { label: '最近歷史', value: m.recent_history, sub: `上限 ${overview.short_term_message_limit} 則`, accent: 'var(--c-accent-fg)' },
         { label: '已摘要', value: m.summarized },
         { label: '已刪除', value: m.deleted, accent: m.deleted ? 'var(--c-fg2)' : undefined },
       ]} />
+
+      <div style={{ fontSize: 12, color: 'var(--c-fg2)' }}>
+        最近歷史取未刪除的最新訊息，實際聊天內容仍受 token 預算限制。
+        {overview.auto_summarize_enabled === false && ' 自動摘要已關閉，已摘要標記不會排除訊息。'}
+        {channelOf(userId) === 'line' && ' LINE 對話跨話題維持連續歷史；話題僅為整理標籤。'}
+      </div>
 
       {/* Two-column detail */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 14 }}>
@@ -158,7 +164,7 @@ function TabC1({ userId, overview, loading, error, onRefresh }) {
         </Panel>
 
         {/* Summaries — 大項#3：摘要依話題隔離，概覽改顯示 per-topic 統計 */}
-        <Panel title="摘要" subtitle="依話題隔離">
+        <Panel title="摘要" subtitle={overview.auto_summarize_enabled === false ? '自動摘要已關閉 · 現有摘要不會用於聊天' : '依話題整理'}>
           <KVGrid cols={1} items={[
             { label: '有摘要的話題', value: s.active_count ?? 0, mono: true },
             { label: '摘要版本總數', value: s.total_versions, mono: true },
@@ -175,13 +181,13 @@ function TabC1({ userId, overview, loading, error, onRefresh }) {
             { label: '最後事實更新', value: fmtTime(overview.last_fact_updated_at), mono: true },
           ]} />
         </Panel>
-        <SoulBindPanel userId={userId} currentSoulId={overview.soul_id} onSoulChanged={onRefresh} />
+        <SoulBindPanel userId={userId} currentSoulId={overview.bound_soul_id} effectiveSoulId={overview.effective_soul_id} soulReason={overview.soul_reason} onSoulChanged={onRefresh} />
       </div>
 
       <DangerZone>
         <DangerAction
           label="清除全部記憶"
-          description="軟刪除所有訊息，硬刪除所有事實與摘要"
+          description="軟刪除所有訊息，硬刪除所有事實、摘要、話題與遺忘紀錄（Soul 設定保留）"
           buttonLabel="清除全部記憶"
           loading={nukeLoading}
           onConfirm={handleNuke}
@@ -211,14 +217,14 @@ function TabC2({ userId, onChanged }) {
     setLoading(true);
     const params = { limit: lim, offset: off };
     if (t) params.topic_id = t;
-    const res = await apiCall('GET', `users/${userId}/messages`, params);
+    const res = await apiCall('GET', `users/${encodeURIComponent(userId)}/messages`, params);
     if (res.success) { setMessages(res.data.messages); setTotal(res.data.total); }
     setLoading(false);
     setSelected(new Set());
   }
 
   async function loadTopics() {
-    const res = await apiCall('GET', `users/${userId}/topics`);
+    const res = await apiCall('GET', `users/${encodeURIComponent(userId)}/topics`);
     if (res.success) setTopics(res.data.topics);
   }
 
@@ -244,7 +250,7 @@ function TabC2({ userId, onChanged }) {
   async function showDetail(msg) {
     setDetail({ ...msg, _loading: true });
     setDLoad(true);
-    const res = await apiCall('GET', `users/${userId}/messages/${msg.message_id}`);
+    const res = await apiCall('GET', `users/${encodeURIComponent(userId)}/messages/${encodeURIComponent(msg.message_id)}`);
     setDetail(res.success ? res.data : null);
     setDLoad(false);
   }
@@ -254,7 +260,7 @@ function TabC2({ userId, onChanged }) {
     const ok = await showConfirm(`軟刪除選取的 ${ids.length} 筆訊息？`, '選取的訊息將被軟刪除，可透過資料庫還原。');
     if (!ok) return;
     setSelDel(true);
-    const res = await apiCall('POST', `users/${userId}/messages/soft-delete`, { message_ids: ids });
+    const res = await apiCall('POST', `users/${encodeURIComponent(userId)}/messages/soft-delete`, { message_ids: ids });
     if (res.success) {
       showToast(`已軟刪除 ${res.data.soft_deleted} 筆訊息`, 'success');
       loadMessages(limit, offset);
@@ -265,14 +271,14 @@ function TabC2({ userId, onChanged }) {
 
   async function handleDeleteAll() {
     // 刪除範圍 = 此用戶所有話題的未刪除訊息（含已摘要），不受話題篩選與分頁影響 → 以概覽統計計數。
-    const ov = await apiCall('GET', `users/${userId}/overview`);
+    const ov = await apiCall('GET', `users/${encodeURIComponent(userId)}/overview`);
     if (!ov.success) return;
     const count = ov.data.messages.active + ov.data.messages.summarized;
     if (count === 0) { showToast('沒有可刪除的訊息', 'info'); return; }
     const ok = await showConfirm('軟刪除全部訊息？', `將軟刪除此用戶所有話題的全部 ${count} 筆訊息。`);
     if (!ok) return;
     setDelLoad(true);
-    const res = await apiCall('DELETE', `users/${userId}/messages`, { confirm: 'all' });
+    const res = await apiCall('DELETE', `users/${encodeURIComponent(userId)}/messages`, { confirm: 'all' });
     if (res.success) { showToast(`已軟刪除 ${res.data.soft_deleted} 筆訊息`, 'success'); loadMessages(limit, offset); onChanged && onChanged(); }
     setDelLoad(false);
   }
@@ -285,9 +291,9 @@ function TabC2({ userId, onChanged }) {
       <Toolbar>
         <Button variant="ghost" size="sm" icon="refresh" loading={loading}
           onClick={() => loadMessages(limit, offset)}>重新整理</Button>
-        <span style={{ fontSize: 12, color: 'var(--c-fg2)' }}>話題</span>
+        <span style={{ fontSize: 12, color: 'var(--c-fg2)' }}>話題（僅整理標籤）</span>
         <Select value={topicFilter}
-          options={[{ value: '', label: '全部話題' },
+          options={[{ value: '', label: '全部標籤／連續歷史' },
             ...topics.map(t => ({ value: t.topic_id, label: (t.is_active ? '★ ' : '') + (t.title || t.topic_id) }))]}
           onChange={v => { setTopicFilter(v); setOffset(0); loadMessages(limit, 0, v); }}
           style={{ width: 200 }} />
@@ -299,6 +305,12 @@ function TabC2({ userId, onChanged }) {
         )}
         <Button variant="danger" size="sm" loading={delLoading} onClick={handleDeleteAll}>軟刪除全部</Button>
       </Toolbar>
+
+      {channelOf(userId) === 'line' && (
+        <div style={{ padding: '8px 14px', fontSize: 12, color: 'var(--c-fg2)' }}>
+          LINE 對話使用跨話題的連續歷史。此篩選只整理檢視，不會限制聊天的歷史範圍。
+        </div>
+      )}
 
       <div style={{ flex: 1, overflow: 'auto' }}>
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, background: 'var(--c-surface)' }}>
@@ -427,7 +439,7 @@ function TabCTopics({ userId, onChanged }) {
 
   async function loadTopics() {
     setLoading(true);
-    const res = await apiCall('GET', `users/${userId}/topics`);
+    const res = await apiCall('GET', `users/${encodeURIComponent(userId)}/topics`);
     if (res.success) setTopics(res.data.topics);
     setLoading(false);
   }
@@ -436,7 +448,7 @@ function TabCTopics({ userId, onChanged }) {
 
   async function handleNewTopic() {
     setNewLoad(true);
-    const res = await apiCall('POST', `users/${userId}/topics`);
+    const res = await apiCall('POST', `users/${encodeURIComponent(userId)}/topics`);
     if (res.success) {
       showToast(`已建立新話題「${res.data.title}」並設為使用中`, 'success');
       loadTopics();
@@ -449,7 +461,7 @@ function TabCTopics({ userId, onChanged }) {
     const ok = await showConfirm(`切換至話題「${title}」？`, '後續對話訊息將被標記至此話題。');
     if (!ok) return;
     setSwLoad(p => ({ ...p, [topicId]: true }));
-    const res = await apiCall('POST', `users/${userId}/topics/${topicId}/switch`);
+    const res = await apiCall('POST', `users/${encodeURIComponent(userId)}/topics/${encodeURIComponent(topicId)}/switch`);
     if (res.success) {
       showToast(`已切換至話題「${res.data.title}」`, 'success');
       loadTopics();
@@ -464,7 +476,7 @@ function TabCTopics({ userId, onChanged }) {
       `將軟刪除此話題的 ${msgCount} 則訊息、刪除其摘要並移除話題。若是使用中的話題，會自動改用最近的其他話題。此操作不可還原。`);
     if (!ok) return;
     setDelLoad(p => ({ ...p, [topicId]: true }));
-    const res = await apiCall('DELETE', `users/${userId}/topics/${topicId}`);
+    const res = await apiCall('DELETE', `users/${encodeURIComponent(userId)}/topics/${encodeURIComponent(topicId)}`);
     if (res.success) {
       showToast(`已刪除話題「${title}」`, 'success');
       loadTopics();
@@ -478,7 +490,7 @@ function TabCTopics({ userId, onChanged }) {
   async function submitRename() {
     if (!renameTarget || !renameValue.trim()) return;
     setRenameLoad(true);
-    const res = await apiCall('POST', `users/${userId}/topics/${renameTarget.topic_id}/rename`, { title: renameValue.trim() });
+    const res = await apiCall('POST', `users/${encodeURIComponent(userId)}/topics/${encodeURIComponent(renameTarget.topic_id)}/rename`, { title: renameValue.trim() });
     if (res.success) {
       showToast(`已將話題改名為「${res.data.title}」`, 'success');
       setRenameTarget(null);

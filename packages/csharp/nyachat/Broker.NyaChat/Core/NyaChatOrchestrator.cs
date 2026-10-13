@@ -143,8 +143,15 @@ public class NyaChatOrchestrator : Abstractions.INyaChatOrchestrator
             // 若 LLM 請求失敗（回 null / 例外），整輪不落地，避免未獲回覆的 user 訊息
             // 累積成連續 user turn（防止用戶連續對話 / 歷史污染）。
             var activeFacts      = _memoryService.GetActiveFacts(userId);
-            var activeSummaries  = _memoryService.GetActiveSummaries(userId, topicId);
-            var recentMessages   = _memoryService.GetRecentMessages(userId, topicId, _config.ShortTermMessageLimit);
+            var autoSummarize    = _config.AutoSummarizeEnabled;
+            var activeSummaries  = autoSummarize
+                ? _memoryService.GetActiveSummaries(userId, topicId)
+                : new List<NyaSummary>();
+            var conversationScope = string.IsNullOrWhiteSpace(conversationId) || _memoryService.IsUserTopic(userId, conversationId)
+                ? null
+                : conversationId;
+            var recentMessages   = _memoryService.GetRecentConversation(
+                userId, conversationScope, _config.ShortTermMessageLimit, includeSummarized: !autoSummarize);
             // 當前訊息尚未持久化，recentMessages 本就不含它，無需再過濾。
             var historyMessages  = recentMessages;
 
@@ -158,7 +165,11 @@ public class NyaChatOrchestrator : Abstractions.INyaChatOrchestrator
             var maxContext    = chatProfile.MaxContextTokens ?? _config.DefaultMaxContextTokens;
             var outputReserve = Math.Clamp(
                 (int)(maxContext * _config.OutputReserveRatio), _config.MinOutputTokens, _config.MaxOutputTokens);
-            var inputBudget   = Math.Max(0, maxContext - outputReserve - _config.ContextSafetyMargin);
+            var tools         = _toolRegistry.BuildLlmTools(userId, channelType);
+            var toolReserve   = tools.Count == 0 ? 0
+                : _tokenEstimator.Estimate(System.Text.Json.JsonSerializer.Serialize(tools))
+                  + Math.Min(4096, Math.Max(0, maxContext - outputReserve) / 5);
+            var inputBudget   = Math.Max(0, maxContext - outputReserve - _config.ContextSafetyMargin - toolReserve);
             var budget = new NyaPromptBudget
             {
                 InputTokenBudget = inputBudget,
@@ -181,7 +192,6 @@ public class NyaChatOrchestrator : Abstractions.INyaChatOrchestrator
                     userId[..Math.Min(8, userId.Length)], inputBudget);
 
             // ── 7. 建構工具清單（啟用 ∩ 授權）並呼叫 LLM ───────────────────────
-            var tools = _toolRegistry.BuildLlmTools(userId, channelType);
             var request = new NyaLlmRequest
             {
                 // Model 與取樣（Temperature/TopP）由 chat profile 決定，facade 會對齊；此處僅組訊息與工具。
@@ -204,96 +214,144 @@ public class NyaChatOrchestrator : Abstractions.INyaChatOrchestrator
             List<string>? directReplies = null;
             var toolRound = 0;
             var directiveAdded = false;
+            var ledger = new List<(NyaToolCall Call, NyaToolExecStatus Status)>();
+            var exactReplies = new List<string>();
+            var correctionAttempted = false;
+            List<string> processedReplies;
 
-            while (llmResponse.HasToolCalls)
+            while (true)
             {
-                toolRound++;
-                var toolCalls = llmResponse.ToolCalls!;
-
-                // 記錄所有 LLM 決定呼叫的工具
-                foreach (var tc in toolCalls)
-                    _auditLogger.LogToolCall(userId, tc.FunctionName, tc.FunctionArguments, ResolveToolType(tc.FunctionName), traceId: traceId);
-
-                // 審查5：單輪內執行「全部」工具（不再 FirstOrDefault、不再丟棄）。
-                // 改進2：同輪 tool_calls 並行執行（彼此獨立；DB 寫入由 BrokerDb write gate 序列化）。
-                // ponytail: 假設插件無跨呼叫共享可變狀態；若未來插件有序依賴，改回逐一 await。
-                var outcomes = await Task.WhenAll(
-                    toolCalls.Select(tc => ExecuteToolAsync(tc, userId, channelType, topicId, traceId, ct)));
-
-                var executed = new List<(NyaToolCall Call, Abstractions.NyaToolResult Result, NyaToolExecStatus Status)>();
-                for (var i = 0; i < toolCalls.Count; i++)
+                while (llmResponse.HasToolCalls)
                 {
-                    var (result, status) = outcomes[i];
-                    _auditLogger.LogToolResult(userId, toolCalls[i].FunctionName, Truncate(result.LlmContent, 200),
-                        AuditResult(status), traceId: traceId);
-                    executed.Add((toolCalls[i], result, status));
+                    toolRound++;
+                    var toolCalls = llmResponse.ToolCalls!;
+
+                    // 記錄所有 LLM 決定呼叫的工具
+                    foreach (var tc in toolCalls)
+                        _auditLogger.LogToolCall(userId, tc.FunctionName, tc.FunctionArguments, ResolveToolType(tc.FunctionName), traceId: traceId);
+
+                    // 審查5：單輪內執行「全部」工具（不再 FirstOrDefault、不再丟棄）。
+                    // 改進2：同輪 tool_calls 並行執行（彼此獨立；DB 寫入由 BrokerDb write gate 序列化）。
+                    // ponytail: 假設插件無跨呼叫共享可變狀態；若未來插件有序依賴，改回逐一 await。
+                    var outcomes = await Task.WhenAll(
+                        toolCalls.Select(tc => ExecuteToolAsync(tc, userId, channelType, topicId, traceId, ct)));
+
+                    var executed = new List<(NyaToolCall Call, Abstractions.NyaToolResult Result, NyaToolExecStatus Status)>();
+                    for (var i = 0; i < toolCalls.Count; i++)
+                    {
+                        var (result, status) = outcomes[i];
+                        _auditLogger.LogToolResult(userId, toolCalls[i].FunctionName, Truncate(result.LlmContent, 200),
+                            AuditResult(status), traceId: traceId);
+                        executed.Add((toolCalls[i], result, status));
+                        ledger.Add((toolCalls[i], status));
+                    }
+
+                    // D2 / Bug #7：DirectReplies 不再只在單一工具時 honor。
+                    // 全部工具都要求原樣輸出 → 串接全部、略過後續 LLM（多工具下不再靜默丟棄）。
+                    var results = executed.Select(e => e.Result).ToList();
+                    var planned = NyaToolReplyPlanner.PlanDirectReplies(results);
+                    if (planned == null)
+                        exactReplies.AddRange(results.Where(r => r.RequiresExactOutput && r.DirectReplies is { Count: > 0 })
+                            .SelectMany(r => r.DirectReplies!));
+
+                    if (NyaToolReplyPlanner.IsMixed(results))
+                        _logger.LogInformation(
+                            "[NyaChat] User={User} mixed direct/personalized tool results in one turn; routing all through closed-loop LLM.",
+                            userId[..Math.Min(8, userId.Length)]);
+
+                    // 閉環：追加 assistant(tool_calls) + 每筆 role=tool 結果 → 下一次 LLM。
+                    // 大項三 3D：工具結果可能很長（如搜尋），餵回前依 PerToolResultMaxTokens 截尾，避免撐爆 context。
+                    llmMessages.Add(new NyaLlmMessage { Role = "assistant", Content = "", ToolCalls = toolCalls });
+                    foreach (var (tc, result, status) in executed)
+                    {
+                        // 先依 PerToolResultMaxTokens 截尾原始內容，再於最前面標註執行狀態
+                        //（成功/失敗/未啟動），狀態標籤不受內容截斷影響——讓 LLM 明確看到工具到底有沒有跑、成不成功。
+                        var content = planned == null && result.RequiresExactOutput && result.DirectReplies is { Count: > 0 }
+                            ? "此工具的輸出將由系統原樣提供，請勿重述或改寫。"
+                            : _tokenEstimator.TruncateToTokens(result.LlmContent, _config.PerToolResultMaxTokens);
+                        llmMessages.Add(new NyaLlmMessage
+                        {
+                            Role       = "tool",
+                            Content    = NyaToolStatusFormatter.FormatForLlm(status, content),
+                            ToolCallId = tc.Id,
+                            Name       = tc.FunctionName
+                        });
+                    }
+
+                    if (planned != null)
+                    {
+                        directReplies = planned.ToList();
+                        break;
+                    }
+
+                    // Doc 2 surface #2：給後續回覆明確任務層指令（用人格轉述、勿改數字/事實），
+                    // 避免模型自由發揮竄改/編造工具結果（金融/量化工具尤其重要）。只加一次，防多輪堆疊。
+                    if (!directiveAdded)
+                    {
+                        llmMessages.Add(new NyaLlmMessage { Role = "system", Content = _promptBuilder.ToolResultDirective() });
+                        directiveAdded = true;
+                    }
+
+                    // Model/取樣由 chat profile 對齊；3E：後續 LLM 同樣套用輸出上限
+                    var allowMoreTools = toolRound < Math.Max(1, _config.MaxToolRounds);
+                    var followUp = new NyaLlmRequest
+                    {
+                        Messages  = llmMessages,
+                        Tools     = allowMoreTools && tools.Count > 0 ? tools : null,
+                        MaxTokens = outputReserve
+                    };
+                    llmResponse = await _llmClient.ChatAsync(followUp, ct) ?? new NyaLlmResponse
+                    {
+                        Content = NyaToolStatusFormatter.FormatFallback(ledger.Select(e => e.Status))
+                    };
+                    if (!allowMoreTools) break; // 末輪未帶 tools，理論上不會再有 tool_calls；防衛性終止
                 }
 
-                // D2 / Bug #7：DirectReplies 不再只在單一工具時 honor。
-                // 全部工具都要求原樣輸出 → 串接全部、略過後續 LLM（多工具下不再靜默丟棄）。
-                var results = executed.Select(e => e.Result).ToList();
-                var planned = NyaToolReplyPlanner.PlanDirectReplies(results);
-                if (planned != null)
+                // ── 9. 後處理回覆（依通道 profile）────────────────────────────────
+                if (directReplies != null)
                 {
-                    directReplies = planned.ToList();
+                    // 原樣輸出仍走 PostProcessor 以套用通道格式（多段切割 / markdown 降級）
+                    processedReplies = directReplies.SelectMany(r => _postProcessor.Process(r, channelType)).ToList();
+                    if (processedReplies.Count == 0) processedReplies.Add("");
+                }
+                else
+                {
+                    processedReplies = _postProcessor.Process(llmResponse.Content ?? "", channelType);
+                }
+                processedReplies.AddRange(exactReplies.SelectMany(r => _postProcessor.Process(r, channelType)));
+                if (correctionAttempted && processedReplies.All(string.IsNullOrWhiteSpace))
+                    processedReplies = _postProcessor.Process(NyaToolStatusFormatter.FormatFallback(ledger.Select(e => e.Status)), channelType);
+                var guardText = string.Join("\n", (directReplies ?? new List<string> { llmResponse.Content ?? "" })
+                    .Concat(exactReplies).SelectMany(r => _postProcessor.Process(r, "grounding")));
+                var unbacked = NyaToolReplyPlanner.FindUnbackedActions(guardText, ledger);
+                if (unbacked.Count == 0) break;
+                if (correctionAttempted)
+                {
+                    directReplies = null;
+                    processedReplies = _postProcessor.Process(
+                        "我還不能確認這些操作的結果。" + NyaToolStatusFormatter.FormatFallback(ledger.Select(e => e.Status)), channelType);
                     break;
                 }
 
-                if (NyaToolReplyPlanner.IsMixed(results))
-                    _logger.LogInformation(
-                        "[NyaChat] User={User} mixed direct/personalized tool results in one turn; routing all through closed-loop LLM.",
-                        userId[..Math.Min(8, userId.Length)]);
-
-                // 閉環：追加 assistant(tool_calls) + 每筆 role=tool 結果 → 下一次 LLM。
-                // 大項三 3D：工具結果可能很長（如搜尋），餵回前依 PerToolResultMaxTokens 截尾，避免撐爆 context。
-                llmMessages.Add(new NyaLlmMessage { Role = "assistant", Content = "", ToolCalls = toolCalls });
-                foreach (var (tc, result, status) in executed)
+                correctionAttempted = true;
+                llmMessages.Add(new NyaLlmMessage { Role = "assistant", Content = string.Join("\n", processedReplies) });
+                llmMessages.Add(new NyaLlmMessage
                 {
-                    // 先依 PerToolResultMaxTokens 截尾原始內容，再於最前面標註執行狀態
-                    //（成功/失敗/未啟動），狀態標籤不受內容截斷影響——讓 LLM 明確看到工具到底有沒有跑、成不成功。
-                    var content = _tokenEstimator.TruncateToTokens(result.LlmContent, _config.PerToolResultMaxTokens);
-                    llmMessages.Add(new NyaLlmMessage
-                    {
-                        Role       = "tool",
-                        Content    = NyaToolStatusFormatter.FormatForLlm(status, content),
-                        ToolCallId = tc.Id,
-                        Name       = tc.FunctionName
-                    });
-                }
-
-                // Doc 2 surface #2：給後續回覆明確任務層指令（用人格轉述、勿改數字/事實），
-                // 避免模型自由發揮竄改/編造工具結果（金融/量化工具尤其重要）。只加一次，防多輪堆疊。
-                if (!directiveAdded)
+                    Role = "system",
+                    Content = $"本輪沒有成功執行以下動作：{string.Join("、", unbacked)}。請呼叫對應工具，或改寫回覆，不要宣稱動作完成，也不要編造結果。"
+                });
+                directReplies = null;
+                llmResponse = await _llmClient.ChatAsync(new NyaLlmRequest
                 {
-                    llmMessages.Add(new NyaLlmMessage { Role = "system", Content = _promptBuilder.ToolResultDirective() });
-                    directiveAdded = true;
-                }
-
-                // Model/取樣由 chat profile 對齊；3E：後續 LLM 同樣套用輸出上限
-                var allowMoreTools = toolRound < Math.Max(1, _config.MaxToolRounds);
-                var followUp = new NyaLlmRequest
-                {
-                    Messages  = llmMessages,
-                    Tools     = allowMoreTools && tools.Count > 0 ? tools : null,
+                    Messages = llmMessages,
+                    Tools = tools.Count > 0 ? tools : null,
                     MaxTokens = outputReserve
+                }, ct) ?? new NyaLlmResponse
+                {
+                    Content = NyaToolStatusFormatter.FormatFallback(ledger.Select(e => e.Status))
                 };
-                llmResponse = await _llmClient.ChatAsync(followUp, ct) ?? new NyaLlmResponse { Content = "操作執行完成。" };
-                if (!allowMoreTools) break; // 末輪未帶 tools，理論上不會再有 tool_calls；防衛性終止
             }
-
-            // ── 9. 後處理回覆（依通道 profile）────────────────────────────────
-            List<string> processedReplies;
-            if (directReplies != null)
-            {
-                // 原樣輸出仍走 PostProcessor 以套用通道格式（多段切割 / markdown 降級）
-                processedReplies = directReplies.SelectMany(r => _postProcessor.Process(r, channelType)).ToList();
-                if (processedReplies.Count == 0) processedReplies.Add("");
-            }
-            else
-            {
-                processedReplies = _postProcessor.Process(llmResponse.Content ?? "", channelType);
-            }
-            var primaryReply = processedReplies.FirstOrDefault() ?? "";
+            var primaryReply = string.Join("\n", processedReplies);
 
             // ── 9.5 空白回覆視同失敗（Fix 4）─────────────────────────────────
             // LLM 回非 null 但空白/全空格內容（thinking 模型耗盡輸出預算的 gotcha，這次發生在 chat）。
@@ -332,7 +390,8 @@ public class NyaChatOrchestrator : Abstractions.INyaChatOrchestrator
                 sw.ElapsedMilliseconds);
 
             // ── 12. 非同步背景：摘要壓縮（大項#3：依當前話題）─────────────────
-            _ = RunBackgroundTasksAsync(userId, topicId);
+            if (autoSummarize)
+                _ = RunBackgroundTasksAsync(userId, topicId);
 
             return new NyaChatResult
             {
@@ -375,7 +434,7 @@ public class NyaChatOrchestrator : Abstractions.INyaChatOrchestrator
             _logger.LogWarning("[NyaChat] Tool {Tool} not executable for user {User}: {Status}",
                 tc.FunctionName, userId[..Math.Min(8, userId.Length)], denyStatus);
             return (Abstractions.NyaToolResult.Fail(StatusJson(denyStatus!, StatusMessage(denyStatus!))),
-                    NyaToolExecStatus.NotEnabled);
+                    denyStatus == "not_authorized" ? NyaToolExecStatus.Denied : NyaToolExecStatus.NotEnabled);
         }
 
         // Bug #4：執行前依 schema 驗證 LLM 提供的參數（required + enum），失敗回饋給 LLM 使其修正。
@@ -449,6 +508,7 @@ public class NyaChatOrchestrator : Abstractions.INyaChatOrchestrator
         NyaToolExecStatus.Success    => "success",
         NyaToolExecStatus.Failed     => "error",
         NyaToolExecStatus.NotEnabled => "skipped",
+        NyaToolExecStatus.Denied     => "skipped",
         _                            => "error"
     };
 

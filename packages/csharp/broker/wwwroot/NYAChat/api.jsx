@@ -28,12 +28,13 @@ async function apiCall(method, path, params) {
 
   try {
     const res = await fetch(url, opts);
-    const json = await res.json();
-    if (!json.success) {
+    const json = await res.json().catch(() => ({ success: false, message: res.statusText, data: null, error_code: res.status, trace_id: null }));
+    if (!json.success || res.status === 401 || res.status === 403) {
       if (res.status === 401) {
         window.showToast && window.showToast('Session 已過期，請重新登入', 'error');
+        window.location.href = '/line-admin.html';
       } else if (res.status === 403) {
-        window.showToast && window.showToast('僅限本機存取', 'error');
+        window.showToast && window.showToast(`權限不足：${json.message}`, 'error');
       } else {
         const traceHint = json.trace_id ? `  trace: ${json.trace_id}` : '';
         window.showToast && window.showToast(`錯誤：${json.message}${traceHint}`, 'error');

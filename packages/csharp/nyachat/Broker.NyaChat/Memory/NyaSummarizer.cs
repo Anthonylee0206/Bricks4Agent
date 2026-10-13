@@ -52,7 +52,7 @@ public class NyaSummarizer
                 return new NyaSummarizeOutcome(NyaSummarizeStatus.NotEnoughMessages);
 
             // 摘要依話題獨立：僅獲取該指定話題的歷史訊息。
-            var topicMessages = _memoryService.GetMessagesByTopic(userId, topicId);
+            var topicMessages = _memoryService.GetModelVisibleMessagesByTopic(userId, topicId);
             var toSummarize = PlanSummaryBatch(
                 topicMessages, _config.SummarizeTriggerCount, _config.SummarizeKeepRecentCount, force,
                 _config.SummarizeMaxBatchSize);

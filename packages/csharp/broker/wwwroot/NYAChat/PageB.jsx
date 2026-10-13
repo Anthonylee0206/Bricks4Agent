@@ -88,7 +88,7 @@ function PageB({ onNavigate, initialKeyword = '' }) {
 function UserRow({ user, onNavigate }) {
   const ch = channelOf(user.user_id);
   return (
-    <TR onClick={() => onNavigate('user/' + user.user_id)}>
+    <TR onClick={() => onNavigate('user/' + encodeURIComponent(user.user_id))}>
       <TD mono>
         <span style={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 360 }}>
           {user.user_id}
@@ -100,7 +100,7 @@ function UserRow({ user, onNavigate }) {
         {user.active_fact_count > 0 ? user.active_fact_count : <span style={{ color: 'var(--c-fg4)' }}>0</span>}
       </TD>
       <TD muted title={fmtTime(user.last_message_at)}>{fmtRelative(user.last_message_at)}</TD>
-      <TD muted>{user.soul_id}</TD>
+      <TD muted title={SOUL_REASON_LABELS[user.soul_reason] || user.soul_reason}>綁定：{user.bound_soul_id ?? '未綁定'}<br />生效：{user.effective_soul_id}</TD>
       <TD><Icon name="chevronRight" size={15} color="var(--c-fg3)" /></TD>
     </TR>
   );
