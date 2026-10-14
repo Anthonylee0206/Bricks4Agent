@@ -9,7 +9,6 @@
 <title>B4A Admin</title>
 <style>
 :root{
-  /* Flat Outline Admin — 淺色綠系扁平。變數名稱保留(JS 依賴),只改值。 */
   --bg:var(--nya-bg);--panel:var(--nya-surface);--panel-2:var(--nya-surface-2);--border:var(--nya-border);--border-strong:var(--nya-strong);--text:var(--nya-fg);--muted:var(--nya-fg-mut);--accent:var(--nya-green-dark);--danger:var(--nya-red);--warn:var(--nya-yellow-txt);--ok:var(--nya-green-dark);
   --green-fill:var(--nya-green);--yellow-fill:var(--nya-yellow);
 }
@@ -2072,7 +2071,6 @@ function wrapAction(fn) {
   };
 }
 
-// --- Alerts ---
 
 async function loadAlerts() {
   const hours = byId("alerts-hours")?.value || "24";
@@ -2103,7 +2101,6 @@ function renderAlertsList(items) {
   }).join("");
 }
 
-// --- Delivery History ---
 
 async function loadDeliveryHistory() {
   const status = byId("delivery-status-filter")?.value || "";

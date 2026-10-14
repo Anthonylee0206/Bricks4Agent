@@ -1,4 +1,3 @@
-/* Page Home — 總覽（起始頁） */
 const { useState, useEffect } = React;
 
 const HOME_TASKS = [

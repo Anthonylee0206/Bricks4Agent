@@ -1,29 +1,24 @@
-/* B4A 共用主題（NyaChat「Flat Outline Admin」淺色/綠系/1px 描邊）
-   顏色與字體的唯一來源；各頁 :root 只留別名（例 --t: var(--nya-fg)），頁面 CSS 不必改名。
-   字體只用本機字型，不連外網（離線版面不得異常）。 */
 :root {
   --nya-font-sans: "Inter", "Noto Sans TC", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang TC", "Microsoft JhengHei", system-ui, sans-serif;
   --nya-font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
 
-  --nya-bg: #F5F6F5;          /* 頁面底 */
-  --nya-surface: #FFFFFF;     /* 卡片/面板 */
-  --nya-surface-2: #ECEEEC;   /* 次要表面/軌道/bar 底 */
-  --nya-border: #D0D3D0;      /* 淺分隔線 */
-  --nya-strong: #1A1C1A;      /* 卡片外框/深色頂欄 */
-  --nya-fg: #1A1C1A;          /* 主文字 */
-  --nya-fg-mut: #5C635A;      /* 次要文字 */
-  --nya-green: #7CB342;       /* 綠填色 */
-  --nya-green-dark: #2E5A27;  /* 綠文字/正/賺 */
-  --nya-yellow: #FBC02D;      /* 警告填色 */
-  --nya-yellow-txt: #9a7400;  /* 警告文字 */
-  --nya-red: #E53935;         /* 錯誤/負/賠 */
+  --nya-bg: #F5F6F5;
+  --nya-surface: #FFFFFF;
+  --nya-surface-2: #ECEEEC;
+  --nya-border: #D0D3D0;
+  --nya-strong: #1A1C1A;
+  --nya-fg: #1A1C1A;
+  --nya-fg-mut: #5C635A;
+  --nya-green: #7CB342;
+  --nya-green-dark: #2E5A27;
+  --nya-yellow: #FBC02D;
+  --nya-yellow-txt: #9a7400;
+  --nya-red: #E53935;
 
-  /* 各頁共用的舊名，保留不動 */
   --font-sans: var(--nya-font-sans);
   --font-mono: var(--nya-font-mono);
 }
 
-/* ── 全站導覽條（由 /nav.js 注入）── */
 .b4a-sitebar {
   display: flex; align-items: center; flex-wrap: wrap; gap: 2px 14px;
   min-height: 34px; padding: 4px 16px; box-sizing: border-box;
@@ -50,7 +45,6 @@
 .b4a-sitebar a.b4a-link[aria-current="page"] { color: var(--nya-green); border-color: #3a5c1a; }
 .b4a-sitebar a:focus-visible { outline: 2px solid var(--nya-green); outline-offset: 1px; }
 
-/* ── 圖示（/icons.svg，取代 emoji）── */
 .ico {
   display: inline-block; width: 1.1em; height: 1.1em; vertical-align: -0.18em; flex: none;
   fill: none; stroke: currentColor; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round;
@@ -59,5 +53,4 @@
 .ico.grn { color: var(--nya-green); }
 .ico.yel { color: var(--nya-yellow-txt); }
 
-/* dashboard 投影模式一併隱藏 */
 body.present .b4a-sitebar { display: none; }

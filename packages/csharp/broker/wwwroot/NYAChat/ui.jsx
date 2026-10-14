@@ -1,4 +1,3 @@
-/* NyaChat Admin — UI primitives */
 const { useState } = React;
 
 const MONO = 'var(--font-mono)';

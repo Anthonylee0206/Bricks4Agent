@@ -1,8 +1,5 @@
-/* Page C — 補充頁籤：C4 事實管理、C5 摘要管理 */
 const { useState, useEffect } = React;
 
-/* Category badge colors — strictly within palette. Red is reserved for destructive
-   actions only, so categories never use it. */
 const CAT_COLORS = {
   identity:    'var(--c-fg)',
   preference:  'var(--c-accent-fg)',
@@ -10,7 +7,6 @@ const CAT_COLORS = {
   instruction: 'var(--c-fg)',
 };
 
-/* ── C4：事實管理 ─────────────────────────────────────────── */
 function FactField({ label, children, flex }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 5, flex }}>
@@ -107,7 +103,6 @@ function TabC4({ userId, onChanged }) {
     if (res.success) { showToast(`已刪除全部 ${res.data.deleted} 筆事實`, 'success'); loadFacts(); onChanged && onChanged(); }
   }
 
-  // 依 category 分組顯示
   const grouped = facts.reduce((acc, f) => {
     (acc[f.category] = acc[f.category] || []).push(f);
     return acc;
@@ -138,14 +133,12 @@ function TabC4({ userId, onChanged }) {
                       padding: '10px 14px', borderBottom: '1px solid var(--c-border-soft)',
                       background: 'var(--c-surface)',
                     }}>
-                      {/* Key */}
                       <div style={{ width: 160, flexShrink: 0 }}>
                         <span className="mono" style={{ fontSize: 12, fontWeight: 600, color: 'var(--c-fg)', display: 'block', wordBreak: 'break-all' }}>
                           {f.fact_key}
                         </span>
                         <span className="mono" style={{ fontSize: 10, color: 'var(--c-fg3)' }}>v{f.version} · {Number(f.confidence).toFixed(2)}</span>
                       </div>
-                      {/* Value */}
                       <div style={{ flex: 1, fontSize: 13, color: 'var(--c-fg)', lineHeight: 1.55, wordBreak: 'break-word', whiteSpace: 'pre-wrap' }}>
                         {f.fact_value}
                         <div style={{ marginTop: 6, fontSize: 12, color: 'var(--c-fg2)' }}>原話：{f.source_text || '—'}</div>
@@ -156,11 +149,9 @@ function TabC4({ userId, onChanged }) {
                           )}
                         </div>
                       </div>
-                      {/* Time */}
                       <div className="mono" style={{ fontSize: 10, color: 'var(--c-fg3)', flexShrink: 0, whiteSpace: 'nowrap' }}>
                         {fmtTimeShort(f.created_at)}
                       </div>
-                      {/* Actions */}
                       <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
                         <Button variant="ghost" size="sm" icon="history" onClick={() => showHistory(f.fact_key)}>歷史</Button>
                         <Button variant="ghost" size="sm" icon="trash" loading={deleteLoading[f.fact_key]}
@@ -173,7 +164,6 @@ function TabC4({ userId, onChanged }) {
         }
       </Panel>
 
-      {/* Add form */}
       <Panel title="手動新增 / 覆蓋事實" accent="var(--c-accent)">
         <div style={{ padding: 14, display: 'flex', gap: 10, alignItems: 'flex-end', flexWrap: 'wrap' }}>
           <FactField label="Category">
@@ -264,16 +254,15 @@ function TabC4({ userId, onChanged }) {
   );
 }
 
-/* ── C5：摘要管理 ─────────────────────────────────────────── */
 function TabC5({ userId, onChanged }) {
   const [autoSummarizeEnabled, setAutoSummarizeEnabled] = useState(null);
   const [summaries, setSummaries]   = useState([]);
   const [loading, setLoading]       = useState(false);
   const [rbLoading, setRBLoad]      = useState({});
   const [trigLoading, setTrigLoad]  = useState(false);
-  const [fullText, setFullText]     = useState(null); // { summaryId, version, text }
-  const [triggerCount, setTriggerCount] = useState(0);   // Fix 2：自動摘要門檻
-  const [topicActive, setTopicActive]   = useState({});  // Fix 2：topic_id → 未摘要(active)訊息數
+  const [fullText, setFullText]     = useState(null);
+  const [triggerCount, setTriggerCount] = useState(0);
+  const [topicActive, setTopicActive]   = useState({});
 
   async function loadSummaries() {
     setLoading(true);
@@ -321,7 +310,6 @@ function TabC5({ userId, onChanged }) {
     if (res.success) { showToast(`已刪除全部 ${res.data.deleted} 個摘要`, 'success'); loadSummaries(); onChanged && onChanged(); }
   }
 
-  // 大項#3：摘要依話題隔離 → 依 topic_id 分組，每個話題一個區塊（active 置頂、舊版收於其下）。
   const groups = (() => {
     const map = new Map();
     summaries.forEach(s => {
@@ -329,7 +317,6 @@ function TabC5({ userId, onChanged }) {
       if (!map.has(key)) map.set(key, { topicId: s.topic_id, topicTitle: s.topic_title, items: [] });
       map.get(key).items.push(s);
     });
-    // 每組依版本新→舊；有 active 摘要的話題排前面
     const list = [...map.values()].map(g => ({
       ...g,
       items: g.items.slice().sort((a, b) => b.version - a.version),
@@ -372,7 +359,6 @@ function TabC5({ userId, onChanged }) {
 
   return (
     <ContentArea>
-      {/* 動作列 + 總計（摘要本體改為依話題分組呈現） */}
       <Panel title="摘要" subtitle={`${groups.length} 個話題 · ${summaries.length} 個版本`}
         actions={
           <div style={{ display: 'flex', gap: 6 }}>
@@ -403,7 +389,6 @@ function TabC5({ userId, onChanged }) {
               const title = g.topicTitle || (g.topicId
                 ? g.topicId
                 : '（全域 / 舊版）');
-              // Fix 2：觸發透明度 —— 未摘要(active)則數 + 距下次自動摘要還差幾則。
               const active = g.topicId ? (topicActive[g.topicId] ?? 0) : 0;
               const remain = Math.max(0, triggerCount - active);
               const trigInfo = autoSummarizeEnabled === true && g.topicId && triggerCount > 0

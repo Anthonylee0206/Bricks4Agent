@@ -1,4 +1,3 @@
-/* Page C — 使用者詳情（主頁 + C1 概覽 + C2 訊息） */
 const { useState, useEffect, useCallback } = React;
 
 const C_TABS = [
@@ -52,7 +51,6 @@ function PageC({ userId, onNavigate }) {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
-      {/* User header */}
       <div style={{
         padding: '14px 24px 12px', flexShrink: 0, background: 'var(--c-surface)',
       }}>
@@ -79,13 +77,11 @@ function PageC({ userId, onNavigate }) {
         {tab === 'facts'     && <TabC4 userId={userId} onChanged={loadOverview} />}
         {tab === 'summaries' && <TabC5 userId={userId} onChanged={loadOverview} />}
         {tab === 'audit'     && <TabC6 userId={userId} />}
-        {/* 身分組分頁（PageH 的 NyaUserRolesTab）已交還 broker 權限後台（2026-10-14），不再引用。 */}
       </div>
     </div>
   );
 }
 
-/* ── C1：概覽 ─────────────────────────────────────────────── */
 function TabC1({ userId, overview, loading, error, onRefresh }) {
   const [nukeLoading, setNuke] = useState(false);
 
@@ -129,7 +125,6 @@ function TabC1({ userId, overview, loading, error, onRefresh }) {
         <Button variant="secondary" size="sm" icon="refresh" loading={loading} onClick={onRefresh}>重新整理</Button>
       </div>
 
-      {/* Message stat tiles */}
       <StatTiles cols={4} items={[
         { label: '訊息總計', value: m.total },
         { label: '最近歷史', value: m.recent_history, sub: `上限 ${overview.short_term_message_limit} 則`, accent: 'var(--c-accent-fg)' },
@@ -143,9 +138,7 @@ function TabC1({ userId, overview, loading, error, onRefresh }) {
         {channelOf(userId) === 'line' && ' LINE 對話跨話題維持連續歷史；話題僅為整理標籤。'}
       </div>
 
-      {/* Two-column detail */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 14 }}>
-        {/* Facts */}
         <Panel title="事實" subtitle={`${f.total_active} 筆有效`}>
           {catEntries.length === 0
             ? <EmptyState message="尚無有效事實" />
@@ -163,7 +156,6 @@ function TabC1({ userId, overview, loading, error, onRefresh }) {
           }
         </Panel>
 
-        {/* Summaries — 大項#3：摘要依話題隔離，概覽改顯示 per-topic 統計 */}
         <Panel title="摘要" subtitle={overview.auto_summarize_enabled === false ? '自動摘要已關閉 · 現有摘要不會用於聊天' : '依話題整理'}>
           <KVGrid cols={1} items={[
             { label: '有摘要的話題', value: s.active_count ?? 0, mono: true },
@@ -173,7 +165,6 @@ function TabC1({ userId, overview, loading, error, onRefresh }) {
         </Panel>
       </div>
 
-      {/* Time + Soul binding */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 14 }}>
         <Panel title="時間資訊">
           <KVGrid cols={1} items={[
@@ -197,7 +188,6 @@ function TabC1({ userId, overview, loading, error, onRefresh }) {
   );
 }
 
-/* ── C2：訊息管理 ─────────────────────────────────────────── */
 function TabC2({ userId, onChanged }) {
   const [messages, setMessages]   = useState([]);
   const [total, setTotal]         = useState(0);
@@ -210,7 +200,7 @@ function TabC2({ userId, onChanged }) {
   const [delLoading, setDelLoad]  = useState(false);
   const [selDelLoad, setSelDel]   = useState(false);
   const [topics, setTopics]       = useState([]);
-  const [topicFilter, setTopicFilter] = useState(''); // 大項#5：依話題篩選
+  const [topicFilter, setTopicFilter] = useState('');
 
   async function loadMessages(lim, off, topic) {
     const t = topic !== undefined ? topic : topicFilter;
@@ -270,7 +260,6 @@ function TabC2({ userId, onChanged }) {
   }
 
   async function handleDeleteAll() {
-    // 刪除範圍 = 此用戶所有話題的未刪除訊息（含已摘要），不受話題篩選與分頁影響 → 以概覽統計計數。
     const ov = await apiCall('GET', `users/${encodeURIComponent(userId)}/overview`);
     if (!ov.success) return;
     const count = ov.data.messages.active + ov.data.messages.summarized;
@@ -426,14 +415,13 @@ function TabC2({ userId, onChanged }) {
   );
 }
 
-/* ── 話題管理 ─────────────────────────────────────────────── */
 function TabCTopics({ userId, onChanged }) {
   const [topics, setTopics]       = useState([]);
   const [loading, setLoading]     = useState(false);
   const [newLoading, setNewLoad]  = useState(false);
   const [swLoading, setSwLoad]    = useState({});
   const [delLoading, setDelLoad]  = useState({});
-  const [renameTarget, setRenameTarget] = useState(null); // { topic_id, title }
+  const [renameTarget, setRenameTarget] = useState(null);
   const [renameValue, setRenameValue]   = useState('');
   const [renameLoading, setRenameLoad]  = useState(false);
 
@@ -470,7 +458,6 @@ function TabCTopics({ userId, onChanged }) {
     setSwLoad(p => ({ ...p, [topicId]: false }));
   }
 
-  // 大項#2：刪除話題（管理端，不開放 LLM）。連同其訊息（軟刪除）與摘要一併清除。
   async function handleDelete(topicId, title, msgCount) {
     const ok = await showConfirm(`刪除話題「${title}」？`,
       `將軟刪除此話題的 ${msgCount} 則訊息、刪除其摘要並移除話題。若是使用中的話題，會自動改用最近的其他話題。此操作不可還原。`);
@@ -485,7 +472,6 @@ function TabCTopics({ userId, onChanged }) {
     setDelLoad(p => ({ ...p, [topicId]: false }));
   }
 
-  // 大項#4/#1：話題改名（網頁，同 LLM rename_topic 對應端點）。
   function openRename(t) { setRenameTarget(t); setRenameValue(t.title || ''); }
   async function submitRename() {
     if (!renameTarget || !renameValue.trim()) return;

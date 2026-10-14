@@ -1,7 +1,5 @@
-/* NyaChat Admin — shared components */
 const { useState, useEffect, useCallback } = React;
 
-/* ── Toast ─────────────────────────────────────────────────── */
 let _toastFn = null;
 window.showToast = (msg, type = 'info', duration = 3000) => {
   _toastFn && _toastFn(msg, type, duration);
@@ -55,7 +53,6 @@ function ToastContainer() {
   );
 }
 
-/* ── Overlay ───────────────────────────────────────────────── */
 function Overlay({ zIndex, onBackdrop, children }) {
   return (
     <div style={{
@@ -68,7 +65,6 @@ function Overlay({ zIndex, onBackdrop, children }) {
   );
 }
 
-/* ── Confirm Dialog ─────────────────────────────────────────── */
 let _confirmFn = null;
 window.showConfirm = (title, description) => {
   if (!_confirmFn) return Promise.resolve(false);
@@ -114,7 +110,6 @@ function ConfirmDialog() {
   );
 }
 
-/* ── Modal ──────────────────────────────────────────────────── */
 function Modal({ title, onClose, children, width = 600 }) {
   useEffect(() => {
     const fn = e => { if (e.key === 'Escape') onClose(); };
@@ -141,7 +136,6 @@ function Modal({ title, onClose, children, width = 600 }) {
   );
 }
 
-/* ── Pagination ─────────────────────────────────────────────── */
 function Pagination({ total, limit, offset, onPage, onLimitChange, limitOptions = [20, 50, 100] }) {
   const page = Math.floor(offset / limit) + 1;
   const totalPages = Math.ceil(total / limit);
@@ -170,7 +164,6 @@ function Pagination({ total, limit, offset, onPage, onLimitChange, limitOptions 
   );
 }
 
-/* ── Section / Panel ────────────────────────────────────────── */
 function SectionHeader({ title, actions, subtitle, accent = 'var(--c-fg)' }) {
   return (
     <div style={{
@@ -197,7 +190,6 @@ function Panel({ title, actions, subtitle, accent, children, style, bodyStyle })
   );
 }
 
-/* ── Key-Value Grid ─────────────────────────────────────────── */
 function KVGrid({ items, cols = 2 }) {
   return (
     <div style={{ display: 'grid', gridTemplateColumns: `repeat(${cols}, 1fr)` }}>
@@ -219,7 +211,6 @@ function KVGrid({ items, cols = 2 }) {
   );
 }
 
-/* ── JsonBlock ──────────────────────────────────────────────── */
 function JsonBlock({ raw, flush }) {
   let display;
   try {
@@ -239,7 +230,6 @@ function JsonBlock({ raw, flush }) {
   );
 }
 
-/* ── Loading / Empty ────────────────────────────────────────── */
 function LoadingRow({ cols = 5 }) {
   return (
     <tr>
@@ -273,7 +263,6 @@ function EmptyState({ icon = 'info', message, hint, loading }) {
   );
 }
 
-/* ── Table ──────────────────────────────────────────────────── */
 function Table({ columns, children, style }) {
   return (
     <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, color: 'var(--c-fg)', tableLayout: 'auto', ...style }}>
@@ -329,7 +318,6 @@ function TD({ children, mono, muted, center, right, style, noWrap, title }) {
   );
 }
 
-/* ── Danger Zone ────────────────────────────────────────────── */
 function DangerZone({ children, title = '危險操作' }) {
   return (
     <div style={{ border: '1px solid var(--c-danger)', background: 'var(--c-surface)', flexShrink: 0 }}>
@@ -355,7 +343,6 @@ function DangerAction({ label, description, buttonLabel, onConfirm, loading }) {
   );
 }
 
-/* ── Toolbar ────────────────────────────────────────────────── */
 function Toolbar({ children, borderBottom = true }) {
   return (
     <div style={{
@@ -369,7 +356,6 @@ function Toolbar({ children, borderBottom = true }) {
   );
 }
 
-/* ── Page header ────────────────────────────────────────────── */
 function PageHeader({ title, count, desc, children }) {
   return (
     <div style={{
@@ -392,7 +378,6 @@ function PageHeader({ title, count, desc, children }) {
   );
 }
 
-/* ── Tab Bar ────────────────────────────────────────────────── */
 function TabBar({ tabs, active, onChange }) {
   return (
     <div role="tablist" style={{
@@ -422,7 +407,6 @@ function TabBar({ tabs, active, onChange }) {
   );
 }
 
-/* ── Content area ───────────────────────────────────────────── */
 function ContentArea({ children, style }) {
   return (
     <div style={{
@@ -435,10 +419,7 @@ function ContentArea({ children, style }) {
   );
 }
 
-/* ── Format helpers ─────────────────────────────────────────── */
 
-// SQLite 讀出的 DateTime 可能沒有 Z suffix（DateTimeKind.Unspecified）
-// 加上 Z 讓瀏覽器正確當作 UTC 解析，再由 Asia/Taipei 時區轉換顯示
 function _asUtc(iso) {
   if (!iso) return iso;
   const s = String(iso);

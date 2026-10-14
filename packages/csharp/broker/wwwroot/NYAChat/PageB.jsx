@@ -1,4 +1,3 @@
-/* Page B — 使用者列表 */
 const { useState, useEffect } = React;
 
 function channelOf(userId) {

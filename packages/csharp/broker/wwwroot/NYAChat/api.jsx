@@ -1,5 +1,3 @@
-/* NyaChat Admin — API wrapper
-   Calls mock resolver in MOCK_MODE, otherwise hits real backend. */
 
 async function apiCall(method, path, params) {
   if (window.MOCK_MODE) {

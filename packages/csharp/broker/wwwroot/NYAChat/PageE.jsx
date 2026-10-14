@@ -1,4 +1,3 @@
-/* Page E — Soul 與引擎 */
 const { useState, useEffect } = React;
 
 const _soulInp = {
@@ -8,7 +7,6 @@ const _soulInp = {
 };
 const _soulLbl = { fontSize: 12, color: 'var(--c-fg2)', marginBottom: 4, display: 'block', fontWeight: 500 };
 
-// 必須定義在 SoulEditor 外部，避免每次 render 產生新的函式參考導致輸入框失焦
 function StringList({ field, label, addLabel, items, onAdd, onSet, onRemove }) {
   return (
     <Panel title={label} actions={
@@ -30,7 +28,6 @@ function StringList({ field, label, addLabel, items, onAdd, onSet, onRemove }) {
   );
 }
 
-// ── Soul 編輯器 ──────────────────────────────────────────────────────────────
 
 function SoulEditor({ soul, isNew, onSave, onCancel, saving }) {
   const [form, setForm] = useState(() => soul
@@ -58,7 +55,6 @@ function SoulEditor({ soul, isNew, onSave, onCancel, saving }) {
       </PageHeader>
 
       <ContentArea>
-        {/* 基本資訊 */}
         <Panel title="基本資訊">
           <div style={{ padding: '12px 14px', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px 16px' }}>
             <div>
@@ -77,7 +73,6 @@ function SoulEditor({ soul, isNew, onSave, onCancel, saving }) {
           </div>
         </Panel>
 
-        {/* 個性設定 */}
         <Panel title="個性設定 (personality)">
           <div style={{ padding: '12px 14px', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px 16px' }}>
             {[
@@ -105,13 +100,12 @@ function SoulEditor({ soul, isNew, onSave, onCancel, saving }) {
   );
 }
 
-// ── 主頁面 ───────────────────────────────────────────────────────────────────
 
 function PageE() {
   const [status,  setStatus]  = useState(null);
   const [souls,   setSouls]   = useState([]);
   const [loading, setLoading] = useState(false);
-  const [editing, setEditing] = useState(null); // { soul, isNew }
+  const [editing, setEditing] = useState(null);
   const [saving,  setSaving]  = useState(false);
   const [loadFailures, setLoadFailures] = useState([]);
 

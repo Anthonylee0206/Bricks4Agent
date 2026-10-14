@@ -1,7 +1,5 @@
-/* Page G — LLM 模型管理（Profiles + 路由矩陣） */
 const { useState, useEffect, useCallback, useRef } = React;
 
-// ── 輔助：深拷貝 params_json 中的 common 欄位 ─────────────────────────────────
 function parseParamsJson(raw) {
   try { return JSON.parse(raw || '{}'); } catch { return {}; }
 }
@@ -18,15 +16,12 @@ const PARAM_LABELS = {
   repeat_penalty: '重複懲罰',
 };
 
-// ── Profile 編輯器 ─────────────────────────────────────────────────────────────
 function ProfileEditor({ profileId, templates, catalog, onSave, onCancel, saving }) {
   const isNew = !profileId;
 
-  // 原始資料載入
   const [origProfile, setOrigProfile] = useState(null);
   const [loadingProfile, setLoadingProfile] = useState(!isNew);
 
-  // 表單欄位
   const [form, setForm] = useState({
     profile_id: '',
     provider: '',
@@ -41,7 +36,6 @@ function ProfileEditor({ profileId, templates, catalog, onSave, onCancel, saving
 
   const commonParams = catalog.filter(p => p.common);
 
-  // 載入既有 profile（編輯模式）
   useEffect(() => {
     if (isNew) return;
     setLoadingProfile(true);
@@ -65,7 +59,6 @@ function ProfileEditor({ profileId, templates, catalog, onSave, onCancel, saving
     });
   }, [profileId]);
 
-  // 套用模板
   function applyTemplate(tplId) {
     const tpl = templates.find(t => t.id === tplId);
     if (!tpl) return;
@@ -76,13 +69,11 @@ function ProfileEditor({ profileId, templates, catalog, onSave, onCancel, saving
       base_url: tpl.defaultBaseUrl,
       template: tplId,
     }));
-    // seed params_json from template defaultParams
     const merged = { ...parseParamsJson(paramsJson), ...(tpl.defaultParams || {}) };
     setParamsJson(JSON.stringify(merged, null, 2));
     setJsonError(null);
   }
 
-  // 同步 common param → JSON
   function setCommonParam(key, value) {
     const obj = parseParamsJson(paramsJson);
     if (value === '' || value === null || value === undefined) {
@@ -94,7 +85,6 @@ function ProfileEditor({ profileId, templates, catalog, onSave, onCancel, saving
     setJsonError(null);
   }
 
-  // 同步 JSON textarea → form common fields（on blur）
   function handleJsonBlur(raw) {
     try {
       JSON.parse(raw);
@@ -105,7 +95,6 @@ function ProfileEditor({ profileId, templates, catalog, onSave, onCancel, saving
   }
 
   function handleSubmit() {
-    // JSON 必須合法
     let parsed;
     try { parsed = JSON.parse(paramsJson); }
     catch (e) { setJsonError('JSON 格式錯誤：' + e.message); return; }
@@ -129,10 +118,8 @@ function ProfileEditor({ profileId, templates, catalog, onSave, onCancel, saving
       </PageHeader>
 
       <ContentArea style={{ flexDirection: 'row', gap: 14, alignItems: 'flex-start' }}>
-        {/* ── 左欄：欄位表單 ── */}
         <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 14 }}>
 
-          {/* 模板選擇器（僅新增時） */}
           {isNew && (
             <Panel title="套用模板（可選）">
               <div style={{ padding: '10px 14px', display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -146,7 +133,6 @@ function ProfileEditor({ profileId, templates, catalog, onSave, onCancel, saving
             </Panel>
           )}
 
-          {/* 基本欄位 */}
           <Panel title="身份欄位">
             <div style={{ padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: 10 }}>
               <FieldRow label="Profile ID" hint={isNew ? '英數字、_ 或 -' : undefined} required={isNew}>
@@ -179,7 +165,6 @@ function ProfileEditor({ profileId, templates, catalog, onSave, onCancel, saving
             </div>
           </Panel>
 
-          {/* 常用參數 */}
           <Panel title="常用參數">
             <div style={{ padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: 10 }}>
               {commonParams.map(spec => (
@@ -214,7 +199,6 @@ function ProfileEditor({ profileId, templates, catalog, onSave, onCancel, saving
           </Panel>
         </div>
 
-        {/* ── 右欄：JSON 預覽 ── */}
         <div style={{ width: 320, flexShrink: 0, display: 'flex', flexDirection: 'column', gap: 8 }}>
           <Panel title="params_json（取樣 / 思考參數）">
             <div style={{ padding: '10px 14px', display: 'flex', flexDirection: 'column', gap: 6 }}>
@@ -259,7 +243,6 @@ function ProfileEditor({ profileId, templates, catalog, onSave, onCancel, saving
   );
 }
 
-// ── 小輔助：欄位列 ──────────────────────────────────────────────────────────────
 function FieldRow({ label, hint, required, children, mono }) {
   return (
     <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, minWidth: 0 }}>
@@ -274,7 +257,6 @@ function FieldRow({ label, hint, required, children, mono }) {
   );
 }
 
-// ── View A — Profiles 列表 ───────────────────────────────────────────────────────
 function ProfilesView({ templates, catalog, onEdit, onAdd }) {
   const [profiles, setProfiles] = useState([]);
   const [loading, setLoading]   = useState(false);
@@ -375,11 +357,10 @@ function ProfilesView({ templates, catalog, onEdit, onAdd }) {
   );
 }
 
-// ── View B — 路由矩陣 ──────────────────────────────────────────────────────────
 function RoutingView() {
   const [callSites, setCallSites] = useState([]);
   const [profiles,  setProfiles]  = useState([]);
-  const [routes,    setRoutes]    = useState({}); // { call_site_id: profile_id }
+  const [routes,    setRoutes]    = useState({});
   const [saving,    setSaving]    = useState({});
   const [loading,   setLoading]   = useState(false);
 
@@ -412,7 +393,6 @@ function RoutingView() {
     setSaving(p => ({ ...p, [callSiteId]: false }));
   }
 
-  // 下拉選項：__default__ + 所有 profiles
   const profileOptions = [
     { value: '__default__', label: '（預設）' },
     ...profiles.map(p => ({ value: p.profile_id, label: `${p.profile_id}  [${p.provider} · ${p.model}]` })),
@@ -489,14 +469,12 @@ function RoutingView() {
   );
 }
 
-// ── 主頁面：PageG ──────────────────────────────────────────────────────────────
 function PageG() {
-  const [tab,       setTab]       = useState('profiles'); // 'profiles' | 'routing'
-  const [view,      setView]      = useState('list');     // 'list' | 'edit'
-  const [editingId, setEditingId] = useState(null);       // null = new, string = existing
+  const [tab,       setTab]       = useState('profiles');
+  const [view,      setView]      = useState('list');
+  const [editingId, setEditingId] = useState(null);
   const [saving,    setSaving]    = useState(false);
 
-  // 預先載入 templates + catalog（兩個 view 都可能用到）
   const [templates, setTemplates] = useState([]);
   const [catalog,   setCatalog]   = useState([]);
   const [metaLoaded, setMetaLoaded] = useState(false);
@@ -540,7 +518,6 @@ function PageG() {
     setEditingId(null);
   }
 
-  // 編輯 / 新增時不顯示 tab bar
   if (view === 'edit') {
     if (!metaLoaded) return <EmptyState loading />;
     return (

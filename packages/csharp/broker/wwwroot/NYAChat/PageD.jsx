@@ -1,4 +1,3 @@
-/* Page D — 跨用戶稽核日誌（log stream） */
 const { useState, useEffect } = React;
 
 function PageD({ onNavigate, initialResult = '' }) {
@@ -12,7 +11,7 @@ function PageD({ onNavigate, initialResult = '' }) {
   const [loading, setLoading] = useState(false);
   const [limit, setLimit]     = useState(50);
   const [offset, setOffset]   = useState(0);
-  const [applied, setApplied] = useState({}); // 列表目前實際套用的篩選；「清空」以此為範圍
+  const [applied, setApplied] = useState({});
 
   useEffect(() => { doQuery('', '', '', 50, 0, initialResult); }, []);
 
@@ -27,7 +26,6 @@ function PageD({ onNavigate, initialResult = '' }) {
     const filters = {};
     if (id.trim())  filters.user_id = id.trim();
     if (a)          filters.action  = a;
-    // 大項#6：稽核日誌改以關鍵字搜尋（比對 detail_json / action / user_id）。
     if (k.trim())   filters.keyword = k.trim();
     if (r)          filters.result  = r;
     const res = await apiCall('GET', 'audit', { ...filters, limit: l, offset: o });
@@ -35,7 +33,6 @@ function PageD({ onNavigate, initialResult = '' }) {
     setLoading(false);
   }
 
-  // 大項#3：刪除單筆 / 清空全部（管理端專用）。
   async function handleDeleteOne(logId) {
     const ok = await showConfirm('刪除此筆稽核日誌？', '此操作不可還原。');
     if (!ok) return;

@@ -1,5 +1,3 @@
-/* Page C — 補充頁籤：C6 稽核日誌、Soul 綁定面板
-   AuditLog is a shared log-stream component reused by PageD. */
 const { useState, useEffect } = React;
 
 const ACTION_LABELS = {
@@ -40,7 +38,6 @@ function actionColor(a) {
   return 'var(--c-fg2)';
 }
 
-/* One-line inline summary parsed from DetailJson */
 function detailSummary(raw) {
   try {
     const o = JSON.parse(raw);
@@ -48,15 +45,12 @@ function detailSummary(raw) {
     if (o.reply_preview)   parts.push(o.reply_preview);
     if (o.content_preview) parts.push(o.content_preview);
     if (o.error)           parts.push(`錯誤：${o.error}`);
-    // fact_upsert: show category/fact_key v{new_version}
     if (o.fact_key) {
       const keyStr = o.category ? `${o.category}/${o.fact_key}` : o.fact_key;
       parts.push(o.new_version != null ? `${keyStr} → v${o.new_version}` : keyStr);
     }
-    // fact_rollback: show from→to version
     if (o.from_version != null && o.to_version != null)
       parts.push(`v${o.from_version} → v${o.to_version}`);
-    // fact_extract: show extracted keys (up to 4)
     if (Array.isArray(o.keys) && o.keys.length > 0) {
       const preview = o.keys.slice(0, 4).join(', ') + (o.keys.length > 4 ? `… (+${o.keys.length - 4})` : '');
       parts.push(preview);
@@ -87,13 +81,12 @@ function AuditRow({ log, showUser, onUserClick, onDelete }) {
   const isToolResultErr = log.action === 'tool_result' && isErr;
   const isToolResultSkipped = log.action === 'tool_result' && isSkipped;
 
-  // Parse tool output for alert box
   let toolOutput = null;
   if ((isToolResultErr || isToolResultSkipped) && log.detail_json) {
     try {
       const o = JSON.parse(log.detail_json);
       toolOutput = o.output || null;
-    } catch { /* ignore */ }
+    } catch { }
   }
 
   return (
@@ -130,7 +123,6 @@ function AuditRow({ log, showUser, onUserClick, onDelete }) {
         <div style={{ padding: '0 14px 12px 39px', background: 'var(--c-bg)' }}>
           <div className="mono" style={{ fontSize: 11, color: 'var(--c-fg3)', padding: '8px 0 4px' }}>{log.log_id}</div>
 
-          {/* 工具執行失敗：紅色警示框 */}
           {isToolResultErr && (
             <div style={{
               marginBottom: 8,
@@ -152,7 +144,6 @@ function AuditRow({ log, showUser, onUserClick, onDelete }) {
             </div>
           )}
 
-          {/* 工具被跳過：黃色提示框 */}
           {isToolResultSkipped && (
             <div style={{
               marginBottom: 8,
@@ -187,7 +178,6 @@ function AuditRow({ log, showUser, onUserClick, onDelete }) {
   );
 }
 
-/* Shared log-stream list */
 function AuditLog({ logs, loading, showUser, onUserClick, onDelete, emptyMessage = '無稽核日誌', emptyHint }) {
   if (loading && (!logs || logs.length === 0)) return <EmptyState loading />;
   if (!logs || logs.length === 0) return <EmptyState icon="log" message={emptyMessage} hint={emptyHint} />;
@@ -200,7 +190,6 @@ function AuditLog({ logs, loading, showUser, onUserClick, onDelete, emptyMessage
   );
 }
 
-/* ── C6：用戶稽核日誌 ─────────────────────────────────────── */
 function TabC6({ userId }) {
   const [logs, setLogs]       = useState([]);
   const [total, setTotal]     = useState(0);
@@ -210,11 +199,10 @@ function TabC6({ userId }) {
   const [keyword, setKeyword] = useState('');
   const [limit, setLimit]     = useState(50);
   const [offset, setOffset]   = useState(0);
-  const [applied, setApplied] = useState({}); // 列表目前實際套用的篩選；「清空」以此為範圍
+  const [applied, setApplied] = useState({});
 
   async function load(act, kw, lim, off) {
     setLoading(true);
-    // 大項#6：稽核日誌改以關鍵字搜尋（比對 detail_json / action / user_id）。
     const filters = {};
     if (act) filters.action = act;
     if (kw && kw.trim()) filters.keyword = kw.trim();
@@ -226,7 +214,6 @@ function TabC6({ userId }) {
   useEffect(() => { load(action, keyword, limit, offset); }, [userId]);
   function doQuery(act) { const a = act !== undefined ? act : action; setOffset(0); load(a, keyword, limit, 0); }
 
-  // 大項#3：刪除單筆 / 清空此用戶（管理端專用）。
   async function handleDeleteOne(logId) {
     const ok = await showConfirm('刪除此筆稽核日誌？', '此操作不可還原。');
     if (!ok) return;
@@ -269,7 +256,6 @@ function TabC6({ userId }) {
   );
 }
 
-/* ── Soul 綁定面板（內嵌於概覽） ──────────────────────────── */
 function SoulBindPanel({ userId, currentSoulId, effectiveSoulId, soulReason, onSoulChanged }) {
   const [souls, setSouls]        = useState([]);
   const [selected, setSelected]  = useState(currentSoulId || '');

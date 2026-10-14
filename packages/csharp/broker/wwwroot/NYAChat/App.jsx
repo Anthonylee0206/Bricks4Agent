@@ -1,4 +1,3 @@
-/* NyaChat Admin — App（內容區 + hash router；頂欄與左側選單由 /admin-shell.js 提供） */
 const { useState, useEffect } = React;
 
 const PAGES = ['home', 'users', 'audit', 'souls', 'tools', 'llm', 'settings'];

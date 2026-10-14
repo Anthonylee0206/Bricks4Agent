@@ -1,7 +1,5 @@
-/* Page H — 身分組（角色權限管理 + 使用者綁定分頁）items 1–2 */
 const { useState, useEffect, useCallback } = React;
 
-// ── 角色編輯器 ──────────────────────────────────────────────────────────────
 function RoleEditor({ roleId, capabilities, onSave, onCancel, saving }) {
   const isNew = !roleId;
   const [form, setForm] = useState({ role_id: '', display_name: '', allowed_task_types: [], capability_ids: [] });
@@ -74,12 +72,11 @@ function RoleEditor({ roleId, capabilities, onSave, onCancel, saving }) {
   );
 }
 
-// ── 角色清單（側欄主頁）─────────────────────────────────────────────────────
 function PageH() {
   const [roles, setRoles] = useState([]);
   const [caps, setCaps] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [view, setView] = useState('list'); // list | edit
+  const [view, setView] = useState('list');
   const [editId, setEditId] = useState(null);
   const [saving, setSaving] = useState(false);
 
@@ -152,7 +149,6 @@ function PageH() {
   );
 }
 
-// ── 使用者詳情：身分組分頁 ───────────────────────────────────────────────────
 function NyaUserRolesTab({ userId }) {
   const [data, setData] = useState({ principal_id: null, roles: [] });
   const [allRoles, setAllRoles] = useState([]);

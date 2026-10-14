@@ -72,7 +72,6 @@
     @keyframes nya-spin { to { transform: rotate(360deg); } }
   </style>
 
-  <!-- ── 後端連線確認：永遠使用真實後端，連線失敗直接顯示錯誤頁面 ── -->
   <script>
     (function () {
       window.MOCK_MODE = false;
@@ -101,7 +100,6 @@
               'color:var(--c-fg);border:1px solid var(--c-fg);border-radius:4px;cursor:pointer;font-size:13px;font-weight:500;">重新整理</button>' +
               '</div></div></div>';
           }
-          // 不呼叫 resolve()，React 不會掛載
         }
 
         try {
@@ -161,16 +159,12 @@
 <body>
   <div id="root" class="b4a-fill"></div>
 
-  <!-- 2. UI primitives -->
   <script type="text/babel" src="ui.jsx"></script>
 
-  <!-- 3. API wrapper (uses window.mockResolve) -->
   <script type="text/babel" src="api.jsx"></script>
 
-  <!-- 4. Shared components (Toast, Confirm, Table, Pagination…) -->
   <script type="text/babel" src="components.jsx"></script>
 
-  <!-- 5. Pages (load order matters: misc/facts before PageC) -->
   <script type="text/babel" src="PageB.jsx"></script>
   <script type="text/babel" src="PageHome.jsx"></script>
   <script type="text/babel" src="PageC_misc.jsx"></script>
@@ -181,9 +175,7 @@
   <script type="text/babel" src="PageF.jsx"></script>
   <script type="text/babel" src="PageG.jsx"></script>
   <script type="text/babel" src="PageI.jsx"></script>
-  <!-- PageH.jsx（身分組管理）已交還 broker 操作員與 LINE 權限後台（2026-10-14）；檔案保留，不載入。 -->
 
-  <!-- 6. App shell — mounts last -->
   <script type="text/babel" src="App.jsx"></script>
 </body>
 

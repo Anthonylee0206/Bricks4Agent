@@ -1,4 +1,3 @@
-/* Page F — 工具管理 */
 const { useState, useEffect } = React;
 
 const TOOL_GROUP_LABELS = { topic: '話題', memory: '記憶', fact: '事實', search: '搜尋', transport: '交通' };
