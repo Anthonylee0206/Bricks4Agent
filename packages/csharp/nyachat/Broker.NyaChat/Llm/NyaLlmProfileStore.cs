@@ -2,11 +2,6 @@ using BrokerCore.Data;
 
 namespace Broker.NyaChat;
 
-/// <summary>
-/// Doc 3 Plan A：LLM profile/route 專店（NyaChat 專屬 DB）。唯一真相：呼叫點 → route → profile，
-/// 未配對落 "__default__"。取代 NyaChatConfig.LlmProfiles/TaskRouting + legacy 扁平欄位。
-/// Doc 3 Plan C §11：可選 INyaSecretProtector（null=passthrough，既有 2-arg ctor 呼叫者零改動）。
-/// </summary>
 public sealed class NyaLlmProfileStore
 {
     public const string DefaultCallSite = "__default__";
@@ -48,20 +43,21 @@ public sealed class NyaLlmProfileStore
         _db.EnsureTable<NyaLlmRoute>();
     }
 
-    // ── profile CRUD ─────────────────────────────────────────────────────────
     public void UpsertProfile(NyaLlmProfileEntry entry)
     {
         lock (_gate)
         {
+            var extraError = NyaLlmAdminSettings.ValidateExtraBody(entry.ParamsJson);
+            if (extraError != null) throw new InvalidOperationException(extraError);
             entry.UpdatedAt = DateTime.UtcNow;
-            // 加密寫入「副本」，不就地改 caller 的 entry.ApiKey（避免 caller 事後讀到密文的 least-surprise 地雷）。
+
             var toStore = _protector == null ? entry : Encrypted(entry);
             var inserted = _db.Get<NyaLlmProfileEntry>(toStore.ProfileId) == null;
             if (inserted)
                 _db.Insert(toStore);
             else
                 _db.Update(toStore);
-            // 應用程式 log（#4）：profile 異動留痕。絕不記 api_key——只記非敏感欄位。
+
             _logger.LogInformation("[NyaLlmProfileStore] Profile {Op}: id={ProfileId} provider={Provider} model={Model}",
                 inserted ? "inserted" : "updated", entry.ProfileId, entry.Provider, entry.Model);
         }
@@ -73,14 +69,9 @@ public sealed class NyaLlmProfileStore
         return entry == null ? null : Decrypted(entry);
     }
 
-    /// <summary>ListProfiles 回傳 at-rest 形式（仍加密），由外層管理面遮罩後呈現，不洩明文。</summary>
-    public List<NyaLlmProfileEntry> ListProfiles() => _db.GetAll<NyaLlmProfileEntry>();
+        public List<NyaLlmProfileEntry> ListProfiles() => _db.GetAll<NyaLlmProfileEntry>();
 
-    /// <summary>
-    /// 刪除 profile；指向它的路由一併移除（回落 __default__）。
-    /// __default__ 指向的 profile 拒刪（拋 InvalidOperationException）——否則所有未指定路由的呼叫點都會解析失敗。
-    /// </summary>
-    public bool DeleteProfile(string profileId)
+        public bool DeleteProfile(string profileId)
     {
         lock (_gate)
         {
@@ -95,9 +86,7 @@ public sealed class NyaLlmProfileStore
         }
     }
 
-    // ── route ────────────────────────────────────────────────────────────────
-    /// <summary>設定路由；profile 不存在則拋 InvalidOperationException（避免寫出解析必敗的懸空路由）。</summary>
-    public void SetRoute(string callSiteId, string profileId)
+        public void SetRoute(string callSiteId, string profileId)
     {
         lock (_gate)
         {
@@ -111,8 +100,7 @@ public sealed class NyaLlmProfileStore
         }
     }
 
-    /// <summary>移除呼叫點的專屬路由 → 回落 __default__（UI「（預設）」）。__default__ 本身不可移除。</summary>
-    public bool ClearRoute(string callSiteId)
+        public bool ClearRoute(string callSiteId)
     {
         lock (_gate)
         {
@@ -127,18 +115,12 @@ public sealed class NyaLlmProfileStore
 
     public List<NyaLlmRoute> ListRoutes() => _db.GetAll<NyaLlmRoute>();
 
-    // ── 遷移 ─────────────────────────────────────────────────────────────────
-    /// <summary>
-    /// 店空時，用既有 router 把三個 legacy 任務的等效 profile 持久化（忠實保留解析結果），
-    /// 並設 __default__ → chat。一次性、冪等（店非空即跳過，回 false）。
-    /// </summary>
-    public bool MigrateFromLegacyIfEmpty(NyaChatConfig legacyConfig, INyaModelRouter router)
+        public bool MigrateFromLegacyIfEmpty(NyaChatConfig legacyConfig, INyaModelRouter router)
     {
         if (_db.GetAll<NyaLlmProfileEntry>().Count > 0)
             return false;
 
-        // task 名即 call_site_id（chat / fact_extraction / summarization）。
-        foreach (var task in new[] { NyaLlmTasks.Chat, NyaLlmTasks.FactExtraction, NyaLlmTasks.Summarization })
+        foreach (var task in new[] { NyaLlmTasks.Chat, NyaLlmTasks.Summarization })
         {
             var effective = router.Resolve(task, legacyConfig);
             UpsertProfile(NyaLlmProfileEntry.FromProfile(task, effective.Provider, effective));
@@ -150,9 +132,7 @@ public sealed class NyaLlmProfileStore
         return true;
     }
 
-    // ── 解析 ─────────────────────────────────────────────────────────────────
-    /// <summary>call_site_id → route → profile；查無 route 落 __default__；都查無則拋（mis-seed 守衛）。</summary>
-    public NyaLlmProfile ResolveProfile(string callSiteId)
+        public NyaLlmProfile ResolveProfile(string callSiteId)
     {
         lock (_gate)
         {
@@ -169,9 +149,7 @@ public sealed class NyaLlmProfileStore
         }
     }
 
-    // ── 解密輔助 ─────────────────────────────────────────────────────────────
-    /// <summary>回傳 entry 的解密副本（_protector=null 時直接回原物件）。不修改 DB 存放的密文。</summary>
-    private NyaLlmProfileEntry Decrypted(NyaLlmProfileEntry e)
+        private NyaLlmProfileEntry Decrypted(NyaLlmProfileEntry e)
     {
         if (_protector == null) return e;
         return new NyaLlmProfileEntry
@@ -188,8 +166,7 @@ public sealed class NyaLlmProfileStore
         };
     }
 
-    /// <summary>回傳一份 ApiKey 已加密的副本（寫入用）；_protector 為 null 時呼叫端不會走到此路徑。</summary>
-    private NyaLlmProfileEntry Encrypted(NyaLlmProfileEntry e)
+        private NyaLlmProfileEntry Encrypted(NyaLlmProfileEntry e)
         => new()
         {
             ProfileId  = e.ProfileId,

@@ -105,6 +105,31 @@ context.__nyaAuth = { role: 'super_admin', permissions: ['system.status.read'] }
 const protectedDelete = context.Button({ write: 'super', disabled: true, title: '請先切換系統預設 Profile，再刪除' });
 assert.equal(protectedDelete.props.disabled, true);
 assert.equal(protectedDelete.props.title, '請先切換系統預設 Profile，再刪除');
+context.__nyaAuth = { role: 'super_admin', permissions: ['system.status.read', 'audit.read', 'permission.user.manage'] };
+for (const tab of ['overview', 'messages', 'turns', 'topics', 'facts', 'summaries', 'audit']) {
+  const page = context.PageC({ userId: 'web:render', params: new URLSearchParams('tab=' + tab), onNavigate() {} });
+  const types = { overview: 'TabC1', messages: 'TabC2', turns: 'TabCTurns', topics: 'TabCTopics', facts: 'TabC4', summaries: 'TabC5', audit: 'TabC6' };
+  const component = evaluate(types[tab]);
+  const child = find(page, component);
+  assert.ok(child, tab + ' component exists');
+  assert.doesNotThrow(() => component(child.props), tab + ' renders');
+}
+const loadedOverview = { userId: 'web:render', overview: { messages: { total: 2, deleted: 0, recent_history: 2 }, notes: { total_active: 1, categories: { normal: 1 } }, summaries: { total_versions: 1 }, available_souls: [] } };
+assert.doesNotThrow(() => context.TabC1(loadedOverview), 'loaded overview renders the new note model');
 const detail = context.detailSummary(JSON.stringify({ message: 'hello', tool_name: 'search_history', output: 'preview', from_topic_id: 'room-a', to_topic_id: 'room-b', context: { facts: 1, summaries: 0, history: 2, estimated_tokens: 100, truncated: true } }));
 for (const fragment of ['hello', 'search_history', '截斷預覽', 'room-a', 'room-b', '筆記 1', 'history 2', '100 tokens', '已截斷']) assert.ok(detail.includes(fragment));
+const turnsPage = context.PageC({ userId: 'web:user/中文', params: new URLSearchParams('tab=turns'), onNavigate() {} });
+assert.ok(find(turnsPage, context.TabCTurns));
+const notesPage = context.PageC({ userId: 'web:user/中文', params: new URLSearchParams('tab=facts'), onNavigate() {} });
+assert.ok(find(notesPage, context.TabC4));
+const noteSource = fs.readFileSync(path.join(root, 'PageC_facts.jsx'), 'utf8');
+for (const route of ['/notes', '/forget-find', '/forget', '/hide-references', '/selections']) assert.ok(noteSource.includes(route));
+assert.ok(!noteSource.includes('/facts'));
+assert.ok(noteSource.includes('note_id'));
+assert.ok(noteSource.includes('selection_id'));
+assert.ok(noteSource.includes('source_message_ids'));
+assert.ok(noteSource.includes('on_date'));
+assert.ok(noteSource.includes('write="user"'));
+const turnSource = fs.readFileSync(path.join(root, 'PageC.jsx'), 'utf8');
+for (const field of ['origin_topic_id', 'turn_status', 'failureReason', '/turns']) assert.ok(turnSource.includes(field));
 console.log(`NyaChat: ${jsx.length} JSX compiled with Babel 7.29.0; no browser-source comments; routing, permissions and audit presentation checks passed.`);

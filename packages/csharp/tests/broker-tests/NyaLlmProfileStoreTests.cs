@@ -4,10 +4,6 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Broker.Tests;
 
-/// <summary>
-/// Doc 3 Plan A：LLM profile/route 專店（CRUD / 解析+fallback / 映射 / 遷移）。
-/// 使用 %TEMP% 臨時 SQLite（Pooling=False + finally 清理，遵循 CLAUDE.md 規約）。
-/// </summary>
 public static class NyaLlmProfileStoreTests
 {
     private static int _passed;
@@ -127,7 +123,6 @@ public static class NyaLlmProfileStoreTests
             AssertTrue("dangling-route-refused", Throws(() => store.SetRoute("chat", "ghost")));
             AssertEqual("still-default-after-refuse", "default-m", store.ResolveProfile("chat").Model);
 
-            // 刪除被路由指向的 profile → 路由一併移除、回落預設
             store.SetRoute("summarization", "alt");
             AssertTrue("delete-routed-ok", store.DeleteProfile("alt"));
             AssertEqual("deleted-route-falls-default", "default-m", store.ResolveProfile("summarization").Model);
@@ -158,14 +153,12 @@ public static class NyaLlmProfileStoreTests
             var migrated1 = store.MigrateFromLegacyIfEmpty(config, router);
             AssertTrue("did-migrate", migrated1);
 
-            // 三個內建呼叫點 + __default__ 都能解析，且與 router 直接解析等效
             AssertEqual("chat-model", "chat-model", store.ResolveProfile("chat").Model);
             AssertEqual("chat-temp", 0.55f, store.ResolveProfile("chat").Temperature);
-            AssertEqual("extract-resolves", router.Resolve("fact_extraction", config).Model,
-                store.ResolveProfile("fact_extraction").Model);
+            AssertEqual("extract-resolves", router.Resolve("summarization", config).Model,
+                store.ResolveProfile("summarization").Model);
             AssertEqual("default-is-chat", "chat-model", store.ResolveProfile("unmapped").Model);
 
-            // 冪等：再跑一次不重覆遷移、不增列
             var profilesAfter = store.ListProfiles().Count;
             var migrated2 = store.MigrateFromLegacyIfEmpty(config, router);
             AssertTrue("skip-second", !migrated2);
@@ -186,11 +179,10 @@ public static class NyaLlmProfileStoreTests
         {
             db.Dispose();
             foreach (var p in new[] { path, path + "-shm", path + "-wal" })
-                try { if (File.Exists(p)) File.Delete(p); } catch { /* best-effort */ }
+                try { if (File.Exists(p)) File.Delete(p); } catch {  }
         }
     }
 
-    // ── assert helpers ──────────────────────────────────────────────────────────
     private static void AssertEqual<T>(string name, T expected, T actual)
     {
         if (Equals(expected, actual)) { Console.WriteLine($"  [PASS] {name}"); _passed++; }

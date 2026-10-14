@@ -9,18 +9,19 @@ public static class NyaChatHotSettings
 {
     public static readonly IReadOnlyList<NyaChatSettingSpec> All = new[]
     {
+        new NyaChatSettingSpec("NoteCapacity", "有效筆記容量", "integer", 1, 10000, "所有有效筆記每輪完整帶入；新增與還原受此上限限制。"),
+        new NyaChatSettingSpec("NoteMaxLength", "單則筆記字數", "integer", 1, 100000, "超過時回報筆記已滿，請先整理。"),
+        new NyaChatSettingSpec("TopicCapacity", "聊天室容量", "integer", 1, 10000, "完整聊天室目錄的容量上限。"),
         new NyaChatSettingSpec("ShortTermMessageLimit", "目前聊天室的近期訊息上限", "integer", 1, 100000, "僅目前聊天室，排除遺忘內容；實際帶入數再受 token 預算限制。"),
         new NyaChatSettingSpec("DefaultMaxContextTokens", "預設上下文 token", "integer", 512, 2000000, "僅在 chat profile 未指定最大上下文 token 時使用。"),
         new NyaChatSettingSpec("OutputReserveRatio", "輸出保留比例", "number", 0, 1, "輸出預算再受最小與最大輸出 token 限制。"),
         new NyaChatSettingSpec("MinOutputTokens", "最小輸出 token", "integer", 1, 1000000, "輸出保留額的下限。"),
         new NyaChatSettingSpec("MaxOutputTokens", "最大輸出 token", "integer", 1, 1000000, "輸出保留額的上限。"),
         new NyaChatSettingSpec("ContextSafetyMargin", "上下文安全餘額", "integer", 0, 1000000, "額外扣除的 token，吸收估算誤差。"),
-        new NyaChatSettingSpec("FactTokenBudgetRatio", "筆記 token 比例", "number", 0, 1, "輸入預算中留給筆記的比例，其餘給近期對話。"),
         new NyaChatSettingSpec("MaxReplyLength", "單段回覆字數", "integer", 1, 100000, "長回覆的分段字元上限。"),
         new NyaChatSettingSpec("MaxToolRounds", "工具最大回合", "integer", 1, 20, "工具閉環可續查的回合上限。"),
         new NyaChatSettingSpec("PerToolResultMaxTokens", "單一工具結果 token", "integer", 1, 1000000, "過長結果截尾後再送模型。"),
         new NyaChatSettingSpec("ToolExecTimeoutSeconds", "工具逾時秒數", "integer", 1, 3600, "限制單一工具執行時間。"),
-        new NyaChatSettingSpec("FactVersionRetention", "筆記版本保留數", "integer", 1, 1000, "同一則筆記保留的歷史版本數。"),
         new NyaChatSettingSpec("StripMarkdown", "轉為純文字", "bool", null, null, "將 Markdown 降級為 LINE 純文字。"),
         new NyaChatSettingSpec("EnableMultiPartReply", "允許分段回覆", "bool", null, null, "長回覆分為多段傳送。"),
         new NyaChatSettingSpec("DefaultSoulId", "預設 Soul", "string", null, null, "未綁定人格的使用者使用此 Soul。"),

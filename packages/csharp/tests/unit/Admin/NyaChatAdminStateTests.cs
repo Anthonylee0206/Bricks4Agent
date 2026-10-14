@@ -115,7 +115,7 @@ public sealed class NyaChatAdminStateTests : IDisposable
             _audit.LogSoulChange("soul_unbind", "bound", "target");
             _audit.LogReload("soul_reload", 1, new[] { new { file = "bad.json", message = "Invalid JSON" } }, "error");
         }
-        _audit.LogFactUpsert("target", "key", "identity", 1);
+        _audit.LogMemoryTool("target", "note_save", "{}", "completed");
 
         var logs = _audit.GetLogs("target").Logs;
         var bound = logs.Single(l => l.Action == "soul_bind");
@@ -124,7 +124,7 @@ public sealed class NyaChatAdminStateTests : IDisposable
         detail.RootElement.GetProperty("operator").GetProperty("username").GetString().Should().Be("operator");
         detail.RootElement.GetProperty("operator").GetProperty("role").GetString().Should().Be("permission_admin");
         logs.Single(l => l.Action == "soul_unbind").DetailJson.Should().Contain("operator");
-        logs.Single(l => l.Action == "fact_upsert").DetailJson.Should().NotContain("operator");
+        logs.Single(l => l.Action == "note_save").DetailJson.Should().NotContain("operator");
         _audit.GetLogs(action: "prompt_reload").Logs.Single().DetailJson.Should().Contain("nested");
         _audit.GetLogs(action: "soul_reload", result: "error").Logs.Should().ContainSingle();
         _audit.WriteFailureCount.Should().Be(0);

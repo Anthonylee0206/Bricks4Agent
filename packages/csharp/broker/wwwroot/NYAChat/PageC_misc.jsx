@@ -1,6 +1,7 @@
 const { useState, useEffect } = React;
 
 const ACTION_LABELS = {
+  note_save: '保存筆記', note_restore: '還原筆記版本', forget_find: '遺忘候選', forget: '隱藏資料', unforget: '撤銷隱藏引用',
   chat_input: '使用者訊息', chat_output: 'NYA 回覆',
   fact_extract: '萃取事實（歷史）', fact_upsert: '寫入筆記', fact_rollback: '回滾筆記',
   summary_create: '產生摘要', summary_rollback: '回滾摘要', memory_delete: '刪除記憶',

@@ -7,11 +7,6 @@ using System.Text.Json.Nodes;
 
 namespace Broker.Endpoints;
 
-/// <summary>
-/// NyaChat V2 管理 API 端點。
-/// 掛載在 /api/v1/local-admin/nya/ 下，全部需要 LocalAdmin 認證。
-/// 提供記憶查詢、版本回滾、審計日誌、Soul 管理等功能。
-/// </summary>
 public static class NyaChatEndpoints
 {
     public static void Map(RouteGroupBuilder group)
@@ -62,17 +57,23 @@ public static class NyaChatEndpoints
                 return sessionDenied;
             using var auditScope = ctx.RequestServices.GetRequiredService<NyaAuditLogger>()
                 .BeginAdminOperation(operatorSession.Username, operatorSession.Role);
-            return await next(filterContext);
+            using var userLease = ctx.Request.Method != HttpMethods.Get && ctx.Request.RouteValues["userId"] is string userId
+                ? await ctx.RequestServices.GetRequiredService<NyaMemoryService>().LockUserAsync(userId, ctx.RequestAborted) : null;
+            try { return await next(filterContext); }
+            catch (NyaMemoryException ex)
+            {
+                return Results.BadRequest(new { success = false, message = ex.Message, error = new { code = ex.Code, field = ex.Field } });
+            }
         });
 
-        // 與 GET 端點相同的空值處理（空白 = 未篩選），確保刪除範圍與列表一致。
+        MapMemoryTools(nya);
+
         static string? QueryOrNull(HttpContext ctx, string key)
         {
             var v = ctx.Request.Query[key].ToString();
             return string.IsNullOrWhiteSpace(v) ? null : v;
         }
 
-        // ── 工具管理 ────────────────────────────────────────────────────────
         nya.MapGet("/tools", (
             HttpContext ctx,
             LocalAdminAuthService auth,
@@ -151,8 +152,6 @@ public static class NyaChatEndpoints
             }));
         });
 
-        // ── Prompt 模板（大項五 5A）────────────────────────────────────────────
-        // 列出目前載入的模板（id + version）。模板內容外部化於 prompts/*.json，可熱重載。
         nya.MapGet("/prompts", (
             HttpContext ctx,
             LocalAdminAuthService auth,
@@ -169,7 +168,6 @@ public static class NyaChatEndpoints
             }));
         });
 
-        // 手動觸發重載（FileSystemWatcher 已自動重載；此端點供 admin 強制刷新）。
         nya.MapPost("/prompts/reload", (
             HttpContext ctx,
             LocalAdminAuthService auth,
@@ -190,7 +188,6 @@ public static class NyaChatEndpoints
             }));
         });
 
-        // ── 引擎狀態 ────────────────────────────────────────────────────────
         nya.MapGet("/status", (
             HttpContext ctx,
             LocalAdminAuthService auth,
@@ -201,10 +198,9 @@ public static class NyaChatEndpoints
             if (!auth.TryRequireAuthenticated(ctx, out _, out var denied))
                 return denied;
 
-            var config = configStore.Current; // 大項六 6D：當前配置快照
+            var config = configStore.Current;
             var souls = soulProvider.ListSouls();
 
-            // Doc 3 Plan C：以 profile store 解析每個呼叫點「實際生效」的 profile（取代 router/legacy 合成）。
             var tasks = new[]
             {
                 Broker.NyaChat.NyaLlmTasks.Chat,
@@ -222,7 +218,7 @@ public static class NyaChatEndpoints
             {
                 enabled = config.Enabled,
                 auto_summarize_enabled = config.AutoSummarizeEnabled,
-                // Doc 3 Plan C：以呼叫點路由解析後的實際 model/provider 呈現
+
                 task_routing = routing,
                 profiles = store.ListProfiles().Select(e => new
                 {
@@ -231,20 +227,18 @@ public static class NyaChatEndpoints
                     model = e.Model,
                     template = e.Template
                 }),
-                // 相容鍵：沿用舊欄位名，值改取自 chat 路由結果
+
                 chat_model = routing[Broker.NyaChat.NyaLlmTasks.Chat].model,
                 chat_provider = routing[Broker.NyaChat.NyaLlmTasks.Chat].provider,
                 summarization_model = routing[Broker.NyaChat.NyaLlmTasks.Summarization].model,
                 short_term_message_limit = config.ShortTermMessageLimit,
                 summarize_trigger_count = config.SummarizeTriggerCount,
-                fact_version_retention = config.FactVersionRetention,
                 summary_version_retention = config.SummaryVersionRetention,
                 default_soul_id = config.DefaultSoulId,
                 available_souls = souls.Select(s => new { id = s.Id, display_name = s.DisplayName })
             }));
         });
 
-        // ── 可重載配置（大項六 6D）────────────────────────────────────────────
         nya.MapGet("/config", (HttpContext ctx, LocalAdminAuthService auth, INyaConfigStore<NyaChatConfig> configStore) =>
         {
             if (!auth.TryRequireAuthenticated(ctx, out _, out var denied)) return denied;
@@ -283,7 +277,6 @@ public static class NyaChatEndpoints
             return Results.Ok(ApiResponseHelper.Success(((NyaChatConfigStore)configStore).Effective()));
         });
 
-        // ── NEW-1: 列出所有使用者 ─────────────────────────────────────────────────
         nya.MapGet("/users", (
             HttpContext ctx,
             LocalAdminAuthService auth,
@@ -313,7 +306,7 @@ public static class NyaChatEndpoints
                     {
                         user_id           = u.UserId,
                         message_count     = u.MsgCount,
-                        active_fact_count = u.ActiveFactCount,
+                        active_note_count = u.ActiveNoteCount,
                         last_message_at   = u.LastAt,
                         soul_id           = resolved.Soul.SoulId,
                         bound_soul_id     = resolved.BoundSoulId,
@@ -324,7 +317,6 @@ public static class NyaChatEndpoints
             }));
         });
 
-        // ── NEW-2: 使用者總覽（一次取得所有統計）────────────────────────────────
         nya.MapGet("/users/{userId}/overview", (
             HttpContext ctx,
             LocalAdminAuthService auth,
@@ -347,8 +339,7 @@ public static class NyaChatEndpoints
             var resolved = soulProvider.ResolveSoul(userId);
             var config = configStore.Current;
             var activeTopic = memoryService.GetActiveTopic(userId);
-            var recentHistory = activeTopic == null ? new List<NyaMessage>() : memoryService.GetRecentConversation(userId, activeTopic.TopicId,
-                config.ShortTermMessageLimit, includeSummarized: !config.AutoSummarizeEnabled);
+            var recentHistory = CurrentHistoryIds(ctx, userId);
             var lastInput = auth.GetStatus(ctx).Permissions.Contains(LocalAdminPermissions.AuditRead)
                 ? auditLogger.GetLastChatInput(userId) : null;
             return Results.Ok(ApiResponseHelper.Success(new
@@ -356,7 +347,7 @@ public static class NyaChatEndpoints
                 user_id  = ov.UserId,
                 active_topic = activeTopic == null ? null : new { id = activeTopic.TopicId, title = activeTopic.Title },
                 available_souls = soulProvider.ListSouls().Select(s => new { id = s.Id, display_name = s.DisplayName }),
-                forgotten_count = memoryService.GetForgotten(userId).Count,
+                forgotten_count = memoryService.GetHideReferences(userId).Where(r => r.IsActive).Select(r => r.ForgetId).Distinct().Count(),
                 last_turn = lastInput == null ? null : new { trace_id = lastInput.TraceId, created_at = lastInput.CreatedAt, detail_json = lastInput.DetailJson },
                 auto_summarize_enabled = config.AutoSummarizeEnabled,
                 short_term_message_limit = config.ShortTermMessageLimit,
@@ -372,10 +363,10 @@ public static class NyaChatEndpoints
                     deleted    = ov.Messages.Deleted,
                     recent_history = recentHistory.Count
                 },
-                facts = new
+                notes = new
                 {
-                    total_active = ov.Facts.TotalActive,
-                    categories   = ov.Facts.Categories
+                    total_active = ov.Notes.TotalActive,
+                    categories   = ov.Notes.Categories
                 },
                 summaries = new
                 {
@@ -384,11 +375,10 @@ public static class NyaChatEndpoints
                     latest_covered_to_seq = ov.Summaries.LatestCoveredToSeq
                 },
                 last_message_at      = ov.LastMessageAt,
-                last_fact_updated_at = ov.LastFactUpdatedAt
+                last_note_updated_at = ov.LastNoteUpdatedAt
             }));
         });
 
-        // ── NEW-3: 單則完整訊息 ──────────────────────────────────────────────────
         nya.MapGet("/users/{userId}/messages/{messageId}", (
             HttpContext ctx,
             LocalAdminAuthService auth,
@@ -411,6 +401,7 @@ public static class NyaChatEndpoints
                 content       = msg.Content,
                 sequence      = msg.Sequence,
                 topic_id      = msg.TopicId,
+                origin_topic_id = msg.OriginTopicId, turn_id = msg.TurnId, turn_status = memoryService.GetTurn(userId, msg.TurnId)?.Status, failure_reason = memoryService.GetTurn(userId, msg.TurnId)?.FailureReason, scope = msg.Scope,
                 is_deleted    = msg.IsDeleted,
                 is_summarized = msg.IsSummarized,
                 metadata_json = msg.MetadataJson,
@@ -418,64 +409,6 @@ public static class NyaChatEndpoints
             }));
         });
 
-        // ── NEW-4: 手動新增 / 覆寫事實 ──────────────────────────────────────────
-        nya.MapPost("/users/{userId}/facts", (
-            HttpContext ctx,
-            LocalAdminAuthService auth,
-            NyaMemoryService memoryService,
-            NyaAuditLogger auditLogger,
-            string userId) =>
-        {
-            if (!auth.TryRequireAuthenticated(ctx, out _, out var denied))
-                return denied;
-
-            var body = RequestBodyHelper.GetBody(ctx);
-            if (!RequestBodyHelper.TryGetRequired(body, "category", out var category, out var e1)) return e1!;
-            if (!RequestBodyHelper.TryGetRequired(body, "key",      out var key,      out var e2)) return e2!;
-            if (!RequestBodyHelper.TryGetRequired(body, "value",    out var value,    out var e3)) return e3!;
-
-            var confidence = 1.0f;
-            if (body.TryGetProperty("confidence", out var confEl) &&
-                confEl.ValueKind == System.Text.Json.JsonValueKind.Number)
-                confidence = confEl.GetSingle();
-
-            string? sourceText = null;
-            if (body.TryGetProperty("source_text", out var sourceEl) && sourceEl.ValueKind != JsonValueKind.Null)
-            {
-                if (sourceEl.ValueKind != JsonValueKind.String)
-                    return Results.BadRequest(ApiResponseHelper.Error("source_text must be a string.", 400));
-                sourceText = sourceEl.GetString();
-            }
-
-            DateTime? expiresAt = null;
-            if (body.TryGetProperty("expires_in_days", out var daysEl) && daysEl.ValueKind != JsonValueKind.Null)
-            {
-                if (daysEl.ValueKind != JsonValueKind.Number || !daysEl.TryGetInt32(out var days) || days <= 0)
-                    return Results.BadRequest(ApiResponseHelper.Error("expires_in_days must be a positive integer.", 400));
-                try { expiresAt = DateTime.UtcNow.AddDays(days); }
-                catch (ArgumentOutOfRangeException)
-                {
-                    return Results.BadRequest(ApiResponseHelper.Error("expires_in_days is out of range.", 400));
-                }
-            }
-
-            var fact = memoryService.UpsertFact(userId, category, key, value, null, confidence, sourceText, expiresAt);
-            auditLogger.LogFactUpsert(userId, key, category, fact.Version);
-
-            return Results.Ok(ApiResponseHelper.Success(new
-            {
-                user_id    = userId,
-                fact_id    = fact.FactId,
-                fact_key   = fact.FactKey,
-                category   = fact.Category,
-                fact_value = fact.FactValue,
-                source_text = fact.SourceText,
-                expires_at = fact.ExpiresAt?.ToString("O"),
-                version    = fact.Version
-            }));
-        });
-
-        // ── Soul 管理 ────────────────────────────────────────────────────────
         nya.MapGet("/souls", (HttpContext ctx, LocalAdminAuthService auth, NyaSoulProvider soulProvider) =>
         {
             if (!auth.TryRequireAuthenticated(ctx, out _, out var denied))
@@ -505,8 +438,6 @@ public static class NyaChatEndpoints
                 souls = souls.Select(s => new { id = s.Id, display_name = s.DisplayName })
             }));
         });
-
-        // ── Soul CRUD ────────────────────────────────────────────────────────
 
         nya.MapGet("/souls/{soulId}", (
             HttpContext ctx,
@@ -581,7 +512,6 @@ public static class NyaChatEndpoints
             var soul = ParseSoulFromBody(body, out var err);
             if (soul == null) return err!;
 
-            // Enforce soul_id consistency (path param wins)
             soul.SoulId = soulId;
 
             soulProvider.SaveSoul(soul);
@@ -637,7 +567,6 @@ public static class NyaChatEndpoints
             return Results.Ok(ApiResponseHelper.Success(new { user_id = userId, soul_id = soulId }));
         });
 
-        // ── 訊息記錄 ────────────────────────────────────────────────────────
         nya.MapDelete("/users/{userId}/soul", (
             HttpContext ctx,
             LocalAdminAuthService auth,
@@ -674,13 +603,13 @@ public static class NyaChatEndpoints
 
             var limit  = int.TryParse(ctx.Request.Query["limit"].ToString(),  out var l) ? l : 50;
             var offset = int.TryParse(ctx.Request.Query["offset"].ToString(), out var o) ? o : 0;
-            // 大項#5：可選話題篩選。
+
             var topicId = ctx.Request.Query["topic_id"].ToString();
             if (string.IsNullOrWhiteSpace(topicId)) topicId = null;
             var unassigned = bool.TryParse(ctx.Request.Query["unassigned"], out var onlyUnassigned) && onlyUnassigned;
             var messages = memoryService.GetAllMessages(userId, limit, offset, topicId, unassigned);
             var total = memoryService.CountAllMessages(userId, topicId, unassigned);
-            var diagnostics = memoryService.DiagnoseMessages(userId, messages);
+            var diagnostics = memoryService.DiagnoseMessages(userId, messages, CurrentHistoryIds(ctx, userId));
 
             return Results.Ok(ApiResponseHelper.Success(new
             {
@@ -697,6 +626,7 @@ public static class NyaChatEndpoints
                     content_preview = m.Content.Length > 100 ? m.Content[..100] + "…" : m.Content,
                     sequence        = m.Sequence,
                     topic_id        = m.TopicId,
+                    origin_topic_id = m.OriginTopicId, turn_id = m.TurnId, turn_status = memoryService.GetTurn(userId, m.TurnId)?.Status, failure_reason = memoryService.GetTurn(userId, m.TurnId)?.FailureReason, scope = m.Scope,
                     is_deleted      = m.IsDeleted,
                     is_summarized   = m.IsSummarized,
                     metadata_json   = m.MetadataJson,
@@ -716,7 +646,6 @@ public static class NyaChatEndpoints
             if (!auth.TryRequireAuthenticated(ctx, out _, out var denied))
                 return denied;
 
-            // 若指定 message_ids 則僅軟刪除指定訊息（最多 50 筆），否則全部刪除
             var messageIdsRaw = ctx.Request.Query["message_ids"].ToString();
             if (!string.IsNullOrWhiteSpace(messageIdsRaw))
             {
@@ -735,7 +664,6 @@ public static class NyaChatEndpoints
                 }));
             }
 
-            // 全刪需要明確的 confirm=all 防止誤操作
             var confirmAll = ctx.Request.Query["confirm"].ToString();
             if (!string.Equals(confirmAll, "all", StringComparison.OrdinalIgnoreCase))
                 return Results.BadRequest(ApiResponseHelper.Error("Mass delete requires ?confirm=all query parameter."));
@@ -750,7 +678,6 @@ public static class NyaChatEndpoints
             }));
         });
 
-        // ── 批量軟刪除（POST body，避免 query string 長度 / encoding 問題）────
         nya.MapPost("/users/{userId}/messages/soft-delete", (
             HttpContext ctx,
             LocalAdminAuthService auth,
@@ -790,7 +717,6 @@ public static class NyaChatEndpoints
             }));
         });
 
-        // ── 話題管理 ────────────────────────────────────────────────────────
         nya.MapGet("/users/{userId}/topics", (
             HttpContext ctx,
             LocalAdminAuthService auth,
@@ -873,7 +799,6 @@ public static class NyaChatEndpoints
             }));
         });
 
-        // 大項#4：重新命名話題（供網頁 / 客戶端使用；LLM 走 rename_topic 工具）。
         nya.MapPost("/users/{userId}/topics/{topicId}/rename", (
             HttpContext ctx,
             LocalAdminAuthService auth,
@@ -905,7 +830,6 @@ public static class NyaChatEndpoints
             }));
         });
 
-        // 大項#2：刪除話題（管理端專用、不開放 LLM）。連同其訊息（軟刪除）與摘要一併清除。
         nya.MapDelete("/users/{userId}/topics/{topicId}", (
             HttpContext ctx,
             LocalAdminAuthService auth,
@@ -925,198 +849,6 @@ public static class NyaChatEndpoints
             return Results.Ok(ApiResponseHelper.Success(new { user_id = userId, topic_id = topicId, deleted = true }));
         });
 
-        // ── 事實管理 ────────────────────────────────────────────────────────
-        nya.MapGet("/users/{userId}/facts", (
-            HttpContext ctx,
-            LocalAdminAuthService auth,
-            NyaMemoryService memoryService,
-            string userId) =>
-        {
-            if (!auth.TryRequireAuthenticated(ctx, out _, out var denied))
-                return denied;
-
-            var facts = memoryService.GetCurrentFacts(userId);
-            var now = DateTime.UtcNow;
-            return Results.Ok(ApiResponseHelper.Success(new
-            {
-                user_id = userId,
-                total = facts.Count,
-                facts = facts.Select(f => new
-                {
-                    fact_id           = f.FactId,
-                    category          = f.Category,
-                    fact_key          = f.FactKey,
-                    fact_value        = f.FactValue,
-                    confidence        = f.Confidence,
-                    version           = f.Version,
-                    source_message_id = f.SourceMessageId,
-                    source_text       = f.SourceText,
-                    expires_at        = f.ExpiresAt == null ? null : DateTime.SpecifyKind(f.ExpiresAt.Value, DateTimeKind.Utc).ToString("O"),
-                    is_expired        = f.ExpiresAt != null && f.ExpiresAt <= now,
-                    created_at        = f.CreatedAt
-                })
-            }));
-        });
-
-        nya.MapGet("/users/{userId}/facts/{factKey}/history", (
-            HttpContext ctx,
-            LocalAdminAuthService auth,
-            NyaMemoryService memoryService,
-            string userId,
-            string factKey) =>
-        {
-            if (!auth.TryRequireAuthenticated(ctx, out _, out var denied))
-                return denied;
-
-            var history = memoryService.GetFactHistory(userId, factKey);
-            return Results.Ok(ApiResponseHelper.Success(new
-            {
-                user_id = userId,
-                fact_key = factKey,
-                total = history.Count,
-                history = history.Select(f => new
-                {
-                    fact_id       = f.FactId,
-                    category      = f.Category,
-                    fact_value    = f.FactValue,
-                    source_text   = f.SourceText,
-                    expires_at    = f.ExpiresAt == null ? null : DateTime.SpecifyKind(f.ExpiresAt.Value, DateTimeKind.Utc).ToString("O"),
-                    confidence    = f.Confidence,
-                    version       = f.Version,
-                    is_active     = f.IsActive,
-                    created_at    = f.CreatedAt,
-                    superseded_at = f.SupersededAt
-                })
-            }));
-        });
-
-        nya.MapGet("/users/{userId}/forgotten", (
-            HttpContext ctx,
-            LocalAdminAuthService auth,
-            NyaMemoryService memoryService,
-            string userId) =>
-        {
-            if (!auth.TryRequireAuthenticated(ctx, out _, out var denied))
-                return denied;
-
-            var forgotten = memoryService.GetForgotten(userId);
-            return Results.Ok(ApiResponseHelper.Success(new
-            {
-                user_id = userId,
-                total = forgotten.Count,
-                forgotten = forgotten.Select(f => new
-                {
-                    fact_key = f.FactKey,
-                    fact_value = f.FactValue,
-                    match_terms = NyaMemoryService.GetForgottenMatchTerms(f),
-                    through_sequence = f.ThroughSequence,
-                    created_at = f.CreatedAt
-                })
-            }));
-        });
-
-        nya.MapDelete("/users/{userId}/forgotten/{factKey}", (
-            HttpContext ctx,
-            LocalAdminAuthService auth,
-            NyaMemoryService memoryService,
-            NyaAuditLogger auditLogger,
-            string userId,
-            string factKey) =>
-        {
-            if (!auth.TryRequireAuthenticated(ctx, out _, out var denied))
-                return denied;
-
-            var deleted = memoryService.ClearForgotten(userId, factKey);
-            if (deleted == 0)
-                return Results.NotFound(ApiResponseHelper.Error("Forgotten record not found.", 404));
-
-            auditLogger.LogMemoryDelete(userId, "forgotten", factKey);
-            return Results.Ok(ApiResponseHelper.Success(new { user_id = userId, fact_key = factKey, deleted }));
-        });
-
-        nya.MapPost("/users/{userId}/facts/{factKey}/forget", (NyaMemoryService memoryService,
-            NyaAuditLogger auditLogger, string userId, string factKey) =>
-        {
-            if (!memoryService.ForgetFact(userId, factKey, coversPendingTurn: false))
-                return Results.NotFound(ApiResponseHelper.Error("Note not found.", 404));
-            auditLogger.LogMemoryDelete(userId, "note_forget", factKey);
-            return Results.Ok(ApiResponseHelper.Success(new { user_id = userId, fact_key = factKey, forgotten = true }));
-        });
-
-        nya.MapPost("/users/{userId}/facts/{factKey}/rollback", (
-            HttpContext ctx,
-            LocalAdminAuthService auth,
-            NyaMemoryService memoryService,
-            NyaAuditLogger auditLogger,
-            string userId,
-            string factKey) =>
-        {
-            if (!auth.TryRequireAuthenticated(ctx, out _, out var denied))
-                return denied;
-
-            var body = RequestBodyHelper.GetBody(ctx);
-            int? targetVersion = null;
-            if (body.TryGetProperty("target_version", out var tv) && tv.ValueKind == System.Text.Json.JsonValueKind.Number)
-                targetVersion = tv.GetInt32();
-
-            var current = memoryService.GetActiveFacts(userId).FirstOrDefault(f => f.FactKey == factKey);
-            var rolled = memoryService.RollbackFact(userId, factKey, targetVersion);
-
-            if (rolled == null)
-                return Results.BadRequest(ApiResponseHelper.Error("No previous version to rollback to."));
-
-            auditLogger.LogFactRollback(userId, factKey, current?.Version ?? 0, rolled.Version);
-
-            return Results.Ok(ApiResponseHelper.Success(new
-            {
-                user_id = userId,
-                fact_key = factKey,
-                rolled_to_version = rolled.Version,
-                fact_value = rolled.FactValue
-            }));
-        });
-
-        nya.MapDelete("/users/{userId}/facts", (
-            HttpContext ctx,
-            LocalAdminAuthService auth,
-            NyaMemoryService memoryService,
-            NyaAuditLogger auditLogger,
-            string userId) =>
-        {
-            if (!auth.TryRequireAuthenticated(ctx, out _, out var denied))
-                return denied;
-
-            var count = memoryService.DeleteAllFacts(userId);
-            auditLogger.LogMemoryDelete(userId, "facts");
-            return Results.Ok(ApiResponseHelper.Success(new { user_id = userId, deleted = count }));
-        });
-
-        // ── NEW-22: 硬刪除單一事實 ───────────────────────────────────────────
-        nya.MapDelete("/users/{userId}/facts/{factKey}", (
-            HttpContext ctx,
-            LocalAdminAuthService auth,
-            NyaMemoryService memoryService,
-            NyaAuditLogger auditLogger,
-            string userId,
-            string factKey) =>
-        {
-            if (!auth.TryRequireAuthenticated(ctx, out _, out var denied))
-                return denied;
-
-            var count = memoryService.DeleteFact(userId, factKey);
-            if (count == 0)
-                return Results.NotFound(ApiResponseHelper.Error($"Fact '{factKey}' not found for user.", 404));
-
-            auditLogger.LogMemoryDelete(userId, "fact_key", factKey);
-            return Results.Ok(ApiResponseHelper.Success(new
-            {
-                user_id = userId,
-                fact_key = factKey,
-                deleted_versions = count
-            }));
-        });
-
-        // ── 摘要管理 ────────────────────────────────────────────────────────
         nya.MapGet("/users/{userId}/summaries", (
             HttpContext ctx,
             LocalAdminAuthService auth,
@@ -1128,11 +860,11 @@ public static class NyaChatEndpoints
                 return denied;
 
             var history = memoryService.GetSummaryHistory(userId);
-            // 大項#3：摘要依話題獨立 → 附上所屬話題，前端才能辨識是哪個話題的摘要。
+
             var topics = memoryService.ListTopicsWithCount(userId);
             var topicTitles = topics.ToDictionary(t => t.TopicId, t => t.Title);
-            // Fix 2（觸發透明度）：每個話題的未摘要(active)訊息數 + 自動摘要門檻，
-            // 前端可顯示「未摘要 N 則 · 距下次自動摘要還差 max(0, trigger−N) 則」。
+            var invalidSummaries = memoryService.InvalidSummaryIds(userId);
+
             var triggerCount = configStore.Current.SummarizeTriggerCount;
             var topicActive = topics.ToDictionary(
                 t => t.TopicId,
@@ -1151,6 +883,9 @@ public static class NyaChatEndpoints
                     is_active        = s.IsActive,
                     topic_id         = s.TopicId,
                     topic_title      = s.TopicId != null && topicTitles.TryGetValue(s.TopicId, out var tt) ? tt : null,
+                    source_message_ids = JsonSerializer.Deserialize<string[]>(s.SourceMessageIdsJson),
+                    visibility_version = s.VisibilityVersion, scope = s.Scope, conversation_id = s.ConversationId,
+                    invalidated = invalidSummaries.Contains(s.SummaryId),
                     summary_text     = s.SummaryText,
                     summary_preview  = s.SummaryText.Length > 150 ? s.SummaryText[..150] + "…" : s.SummaryText,
                     covered_from_seq = s.CoveredFromSeq,
@@ -1173,8 +908,6 @@ public static class NyaChatEndpoints
             if (!auth.TryRequireAuthenticated(ctx, out _, out var denied))
                 return denied;
 
-            // 大項#3：摘要依話題獨立——對使用者當前 active 話題觸發摘要。
-            // 手動「立即摘要」用 force=true 略過自動觸發門檻（否則切換/新開話題後 active 話題訊息常不足而無作用）。
             if (!configStore.Current.AutoSummarizeEnabled)
                 return Results.Ok(ApiResponseHelper.Success(new
                 {
@@ -1187,7 +920,6 @@ public static class NyaChatEndpoints
             var topicId = memoryService.GetOrCreateActiveTopic(userId);
             var outcome = await summarizer.TrySummarizeAsync(userId, topicId, force: true);
 
-            // 用 outcome 顯示精確原因——尤其區分「訊息不足」與「LLM 回空」（Root cause A 過去被誤報為訊息不足）。
             var triggered = outcome.Created;
             NyaSummary? after = triggered ? memoryService.GetActiveSummaries(userId, topicId).FirstOrDefault() : null;
             var message = outcome.Status switch
@@ -1253,7 +985,6 @@ public static class NyaChatEndpoints
             return Results.Ok(ApiResponseHelper.Success(new { user_id = userId, deleted = count }));
         });
 
-        // ── 審計日誌 ────────────────────────────────────────────────────────
         nya.MapGet("/audit/traces/{traceId}", (NyaAuditLogger auditLogger, string traceId) =>
             Results.Ok(ApiResponseHelper.Success(new
             {
@@ -1337,7 +1068,7 @@ public static class NyaChatEndpoints
                 total,
                 limit,
                 offset,
-                // 稽核管線健康度：>0 代表稽核 DB 寫入正在掉資料（Phase 4-C 兜底計數器，先前無人讀取）。
+
                 write_failure_count = auditLogger.WriteFailureCount,
                 keyword = string.IsNullOrWhiteSpace(keyword) ? null : keyword,
                 logs = logs.Select(lg => new
@@ -1353,8 +1084,6 @@ public static class NyaChatEndpoints
             }));
         });
 
-        // ── 稽核日誌刪除（大項#3，管理端專用、不開放 LLM）────────────────────
-        // 刪除單筆稽核日誌。
         nya.MapDelete("/audit/{logId}", (
             HttpContext ctx,
             LocalAdminAuthService auth,
@@ -1371,7 +1100,6 @@ public static class NyaChatEndpoints
             return Results.Ok(ApiResponseHelper.Success(new { log_id = logId, deleted }));
         });
 
-        // 清空某使用者的稽核日誌（需 ?confirm=all）；可帶 action / keyword / result，只刪符合篩選的部分。
         nya.MapDelete("/users/{userId}/audit", (
             HttpContext ctx,
             LocalAdminAuthService auth,
@@ -1391,7 +1119,6 @@ public static class NyaChatEndpoints
             return Results.Ok(ApiResponseHelper.Success(new { user_id = userId, deleted }));
         });
 
-        // 清空稽核日誌（需 ?confirm=all）；帶 user_id / action / keyword / result 時只刪符合篩選的部分，都不帶 = 全部。
         nya.MapDelete("/audit", (
             HttpContext ctx,
             LocalAdminAuthService auth,
@@ -1412,7 +1139,6 @@ public static class NyaChatEndpoints
             return Results.Ok(ApiResponseHelper.Success(new { deleted }));
         });
 
-        // ── 清除所有記憶 ─────────────────────────────────────────────────────
         nya.MapDelete("/users/{userId}", (
             HttpContext ctx,
             LocalAdminAuthService auth,
@@ -1428,26 +1154,21 @@ public static class NyaChatEndpoints
                 return Results.BadRequest(ApiResponseHelper.Error("Full memory clear requires ?confirm=all query parameter."));
 
             var msgs = memoryService.DeleteAllMessages(userId);
-            var facts = memoryService.DeleteAllFacts(userId);
             var summaries = memoryService.DeleteAllSummaries(userId);
             var topics = memoryService.DeleteAllTopics(userId);
-            var forgotten = memoryService.ClearForgotten(userId);
+            var notes = memoryService.ClearTurnMemory(userId);
             auditLogger.LogMemoryDelete(userId, "all");
 
             return Results.Ok(ApiResponseHelper.Success(new
             {
                 user_id = userId,
                 soft_deleted_messages = msgs,
-                deleted_facts = facts,
                 deleted_summaries = summaries,
                 deleted_topics = topics,
-                cleared_forgotten = forgotten
+                deleted_note_versions = notes
             }));
         });
 
-        // ── Doc 3 Plan C：LLM profile / route / catalog 管理 ─────────────────
-
-        // GET /llm/param-catalog：靜態參數目錄（供 UI 渲染表單欄位）。
         nya.MapGet("/llm/param-catalog", (
             HttpContext ctx,
             LocalAdminAuthService auth) =>
@@ -1458,7 +1179,6 @@ public static class NyaChatEndpoints
             return Results.Ok(ApiResponseHelper.Success(NyaLlmParamCatalog.All));
         });
 
-        // GET /llm/templates：供應商家族模板（供 UI 預填 provider/base_url/params）。
         nya.MapGet("/llm/templates", (
             HttpContext ctx,
             LocalAdminAuthService auth) =>
@@ -1482,7 +1202,7 @@ public static class NyaChatEndpoints
             var profiles = store.ListProfiles().Select(e => new
             {
                 profile_id = e.ProfileId, provider = e.Provider, base_url = e.BaseUrl,
-                api_key = NyaSecretMask.Mask(e.ApiKey), model = e.Model, template = e.Template, params_json = e.ParamsJson,
+                api_key = NyaSecretMask.Mask(e.ApiKey), model = e.Model, template = e.Template, params_json = e.ParamsJson, extra_body = e.ToProfile().ExtraBody,
                 call_sites = NyaLlmAdminSettings.CallSites.Where(cs =>
                     (routes.FirstOrDefault(r => r.CallSiteId == cs) ?? routes.FirstOrDefault(r => r.CallSiteId == NyaLlmProfileStore.DefaultCallSite))?.ProfileId == e.ProfileId).ToArray(),
                 effective = NyaLlmAdminSettings.Effective(e.ToProfile())
@@ -1514,6 +1234,18 @@ public static class NyaChatEndpoints
                 ProfileId = id!, Provider = Read("provider").Trim().ToLowerInvariant(), BaseUrl = Read("base_url").Trim(),
                 ApiKey = Read("api_key"), Model = Read("model").Trim(), Template = Read("template"), ParamsJson = Read("params_json", "{}")
             };
+            if (body.TryGetProperty("extra_body", out var extraBody))
+            {
+                if (extraBody.ValueKind != JsonValueKind.Object) return Results.BadRequest(ApiResponseHelper.Error("extra_body 必須是 JSON object。"));
+                try
+                {
+                    var parameters = System.Text.Json.Nodes.JsonNode.Parse(entry.ParamsJson) as System.Text.Json.Nodes.JsonObject;
+                    if (parameters == null) return Results.BadRequest(ApiResponseHelper.Error("params_json 必須是 JSON object。"));
+                    parameters["extra_body"] = System.Text.Json.Nodes.JsonNode.Parse(extraBody.GetRawText());
+                    entry.ParamsJson = parameters.ToJsonString();
+                }
+                catch (JsonException) { return Results.BadRequest(ApiResponseHelper.Error("params_json 必須是有效 JSON。")); }
+            }
             var validation = NyaLlmAdminSettings.Validate(entry, providers);
             if (validation != null) return Results.BadRequest(ApiResponseHelper.Error(validation));
             if (creating)
@@ -1624,6 +1356,91 @@ public static class NyaChatEndpoints
 
     }
 
+    private static void MapMemoryTools(RouteGroupBuilder nya)
+    {
+        static int PageNumber(HttpContext ctx, string name, int fallback, int max)
+            => int.TryParse(ctx.Request.Query[name], out var value) ? Math.Clamp(value, name == "limit" ? 1 : 0, max) : fallback;
+        static NyaToolContext Context(HttpContext ctx, string userId, string tool, string arguments, bool budget = false, string? forcedScope = null, string? forcedConversation = null)
+        {
+            var body = JsonDocument.Parse(arguments);
+            using (body)
+            {
+                var scope = forcedScope ?? ctx.Request.Query["scope"].ToString();
+                var external = forcedConversation ?? ctx.Request.Query["conversation_id"].ToString();
+                if (scope.Length == 0) scope = "normal";
+                if (scope is not ("normal" or "external") || scope == "external" && string.IsNullOrWhiteSpace(external))
+                    throw new NyaMemoryException("scope", "scope", "外部範圍須提供 conversation_id。");
+                var memory = ctx.RequestServices.GetRequiredService<NyaMemoryService>();
+                var topic = scope == "external" ? external : memory.GetActiveTopic(userId)?.TopicId ?? "";
+                int? noteBudget = null;
+                var estimator = ctx.RequestServices.GetRequiredService<NyaTokenEstimator>();
+                if (budget)
+                {
+                    var config = ctx.RequestServices.GetRequiredService<INyaConfigStore<NyaChatConfig>>().Current;
+                    var profile = ctx.RequestServices.GetRequiredService<NyaLlmClient>().ResolveProfile(NyaLlmTasks.Chat);
+                    var maxContext = profile.MaxContextTokens ?? config.DefaultMaxContextTokens;
+                    var reserve = Math.Clamp((int)(maxContext * config.OutputReserveRatio), config.MinOutputTokens, config.MaxOutputTokens);
+                    var registry = ctx.RequestServices.GetRequiredService<NyaToolRegistry>();
+                    var tools = registry.BuildLlmTools(userId, userId.Split(':')[0]);
+
+                    var prompt = ctx.RequestServices.GetRequiredService<NyaPromptBuilder>();
+                    prompt.BuildTurn(new NyaTurn { TurnId = "admin-budget", UserId = userId, CurrentTopicId = topic, Scope = scope, ConversationId = scope == "external" ? external : null }, memory,
+                        ctx.RequestServices.GetRequiredService<NyaSoulProvider>().GetSoul(userId), config.MaxToolRounds,
+                        maxContext - reserve - config.ContextSafetyMargin - estimator.Estimate(NyaLlmSerialization.BuildToolsJson(tools).ToJsonString()), estimator, userId.Split(':')[0], out _, out var available);
+                    noteBudget = available;
+                }
+                return new NyaToolContext { ToolName = tool, UserId = userId, ChannelType = userId.Split(':')[0], Scope = scope,
+                    ExternalConversationId = scope == "external" ? external : null, ConversationId = topic, ArgumentsJson = arguments, NoteTokenBudget = noteBudget, EstimateTokens = estimator.Estimate };
+            }
+        }
+        static IResult ToolResponse(NyaToolResult result)
+            => result.Success ? Results.Ok(ApiResponseHelper.Success(JsonSerializer.Deserialize<JsonElement>(result.LlmContent)))
+                : Results.BadRequest(new { success = false, message = JsonDocument.Parse(result.LlmContent).RootElement.GetProperty("error").GetProperty("message").GetString(), data = JsonSerializer.Deserialize<JsonElement>(result.LlmContent) });
+        nya.MapGet("/users/{userId}/notes", (HttpContext ctx, string userId, NyaMemoryService memory, INyaConfigStore<NyaChatConfig> config) =>
+        {
+            var notes = memory.AdminNotes(userId);
+            var hidden = memory.GetHideReferences(userId).Where(r => r.IsActive && r.Kind is "note" or "note_version").Select(r => r.TargetId).ToHashSet();
+            var limit = PageNumber(ctx, "limit", 50, 100);
+            var offset = PageNumber(ctx, "offset", 0, int.MaxValue);
+            return Results.Ok(ApiResponseHelper.Success(new { total = notes.Count, limit, offset, capacity = config.Current.NoteCapacity, max_length = config.Current.NoteMaxLength,
+                notes = notes.Skip(offset).Take(limit).Select(n => new { note_id = n.NoteId, key = n.Key, content = n.Content, version = n.Version, is_current = n.IsCurrent,
+                    scope = n.Scope, conversation_id = n.ConversationId, expires_at = n.ExpiresAt, expired = n.ExpiresAt <= DateTime.UtcNow,
+                    hidden = hidden.Contains(n.NoteId) || hidden.Contains(n.VersionId), source_message_ids = JsonSerializer.Deserialize<string[]>(n.SourceMessageIdsJson), created_at = n.CreatedAt }) }));
+        });
+        nya.MapPost("/users/{userId}/notes", async (HttpContext ctx, string userId, FactToolPlugin plugin) =>
+            ToolResponse(await plugin.ExecuteAsync(Context(ctx, userId, "note_save", RequestBodyHelper.GetBody(ctx).GetRawText(), true), ctx.RequestAborted)));
+        nya.MapPost("/users/{userId}/notes/{noteId}/restore", (HttpContext ctx, string userId, string noteId, NyaMemoryService memory) =>
+        {
+            var body = RequestBodyHelper.GetBody(ctx);
+            if (!body.TryGetProperty("version", out var version) || !version.TryGetInt32(out var number))
+                return Results.BadRequest(ApiResponseHelper.Error("version 須為整數。"));
+            var note = memory.RestoreNote(Context(ctx, userId, "note_save", "{}", true), noteId, number);
+            ctx.RequestServices.GetRequiredService<NyaAuditLogger>().LogMemoryTool(userId, "note_restore", body.GetRawText(), JsonSerializer.Serialize(new { note_id = note.NoteId, version = note.Version }));
+            return ToolResponse(NyaToolResult.Envelope(new { note_id = note.NoteId, version = note.Version, expires_at = note.ExpiresAt }));
+        });
+        nya.MapPost("/users/{userId}/forget-find", async (HttpContext ctx, string userId, FactToolPlugin plugin) =>
+            ToolResponse(await plugin.ExecuteAsync(Context(ctx, userId, "forget_find", RequestBodyHelper.GetBody(ctx).GetRawText()), ctx.RequestAborted)));
+        nya.MapPost("/users/{userId}/forget", async (HttpContext ctx, string userId, FactToolPlugin plugin) =>
+            ToolResponse(await plugin.ExecuteAsync(Context(ctx, userId, "forget", RequestBodyHelper.GetBody(ctx).GetRawText()), ctx.RequestAborted)));
+        nya.MapGet("/users/{userId}/hide-references", (string userId, NyaMemoryService memory) =>
+            Results.Ok(ApiResponseHelper.Success(new { references = memory.GetHideReferences(userId) })));
+        nya.MapPost("/users/{userId}/hide-references/{forgetId}/unforget", (HttpContext ctx, string userId, string forgetId, NyaMemoryService memory) =>
+        {
+            var reference = memory.GetHideReferences(userId).FirstOrDefault(r => r.ForgetId == forgetId && r.IsActive);
+            if (reference == null) return Results.Ok(ApiResponseHelper.Success(new { changed = false }));
+            var context = Context(ctx, userId, "forget", "{}", true, reference.Scope, reference.ConversationId);
+            var changed = memory.Unforget(userId, forgetId, context.NoteTokenBudget, context.EstimateTokens);
+            ctx.RequestServices.GetRequiredService<NyaAuditLogger>().LogMemoryTool(userId, "unforget", JsonSerializer.Serialize(new { forget_id = forgetId }), JsonSerializer.Serialize(new { changed }));
+            return Results.Ok(ApiResponseHelper.Success(new { changed }));
+        });
+        nya.MapGet("/users/{userId}/selections", (HttpContext ctx, string userId, NyaMemoryService memory) =>
+            Results.Ok(ApiResponseHelper.Success(new { selections = memory.AdminSelections(userId, PageNumber(ctx, "limit", 50, 100), PageNumber(ctx, "offset", 0, int.MaxValue)) })));
+        nya.MapGet("/users/{userId}/turns", (HttpContext ctx, string userId, NyaMemoryService memory) =>
+            Results.Ok(ApiResponseHelper.Success(new { turns = memory.ListTurns(userId, PageNumber(ctx, "limit", 50, 100), PageNumber(ctx, "offset", 0, int.MaxValue)) })));
+        nya.MapGet("/users/{userId}/turns/{turnId}/work", (string userId, string turnId, NyaMemoryService memory) =>
+            memory.GetTurn(userId, turnId) == null ? Results.NotFound() : Results.Ok(ApiResponseHelper.Success(new { work = memory.GetTurnWork(turnId) })));
+    }
+
     internal static bool TryResolveRouteAuthorization(
         string method,
         string path,
@@ -1656,9 +1473,9 @@ public static class NyaChatEndpoints
             if (segments is ["audit"] or ["audit", "traces", _] or ["users", _, "audit"])
                 permissions = new[] { LocalAdminPermissions.AuditRead };
             else if (segments is ["users"] or
-                     ["users", _, "overview" or "messages" or "topics" or "facts" or "summaries" or "forgotten"] or
-                     ["users", _, "messages", _] or
-                     ["users", _, "facts", _, "history"])
+                     ["users", _, "overview" or "messages" or "topics" or "summaries" or "notes" or "hide-references" or "selections" or "turns"] or
+                     ["users", _, "messages", _] or ["users", _, "turns", _, "work"] or
+                     ["users", _, "notes"])
                 permissions = new[] { LocalAdminPermissions.PermissionUserManage, LocalAdminPermissions.AuditRead };
             else if (segments is ["tools", "availability"])
                 permissions = new[] { LocalAdminPermissions.SystemStatusRead, LocalAdminPermissions.AuditRead, LocalAdminPermissions.PermissionUserManage };
@@ -1675,11 +1492,14 @@ public static class NyaChatEndpoints
         {
             permissions = new[] { LocalAdminPermissions.SystemWorkerManage };
         }
-        else if ((verb == HttpMethods.Delete && segments is ["users", _] or ["users", _, "soul"] or ["users", _, "forgotten", _]) ||
+        else if (verb == HttpMethods.Post && segments is ["users", _, "notes" or "forget-find" or "forget"] or ["users", _, "notes", _, "restore"] or ["users", _, "hide-references", _, "unforget"])
+        {
+            permissions = new[] { LocalAdminPermissions.PermissionUserManage };
+        }
+        else if ((verb == HttpMethods.Delete && segments is ["users", _] or ["users", _, "soul"]) ||
                  ((verb is "POST" or "PUT" or "DELETE") && segments is
-                     ["users", _, "facts" or "messages" or "topics" or "summaries" or "soul"] or
-                     ["users", _, "facts" or "messages" or "topics", _] or
-                     ["users", _, "facts", _, "rollback" or "forget"] or
+                     ["users", _, "messages" or "topics" or "summaries" or "soul"] or
+                     ["users", _, "messages" or "topics", _] or
                      ["users", _, "topics", _, "switch" or "rename"] or
                      ["users", _, "summaries", "trigger"] or
                      ["users", _, "summaries", _, "rollback"]))
@@ -1690,7 +1510,6 @@ public static class NyaChatEndpoints
         return permissions.Length > 0;
     }
 
-    // 角色管理已交還 broker 操作員與 LINE 權限後台（2026-10-14）；保留程式但不載入。
     private static void MapRoleAdmin(RouteGroupBuilder nya)
     {
         static string[] ReadStrArr(System.Text.Json.JsonElement body, string prop)
@@ -1702,12 +1521,10 @@ public static class NyaChatEndpoints
                 .Select(e => e.GetString()!).ToArray();
         }
 
-        // ── 身分組（roles / capabilities / user-roles，items 1–2）──────────────────
         nya.MapGet("/roles", (HttpContext ctx, LocalAdminAuthService auth, Broker.Services.NyaTools.NyaRoleAdminService roles) =>
         {
             if (!auth.TryRequireAuthenticated(ctx, out _, out var denied)) return denied;
-            // 明確投影為 snake_case：local-admin 走明文路徑，預設 camelCase 序列化，
-            // 直接回傳 record 會變 camelCase，前端讀 snake_case 會拿到 undefined。
+
             var rows = roles.ListRoles().Select(r => new
             {
                 role_id              = r.RoleId,
@@ -1815,19 +1632,10 @@ public static class NyaChatEndpoints
         });
     }
 
-    // ── 私有輔助 ────────────────────────────────────────────────────────────
-
-    /// <summary>
-    /// 驗證大項三 token 預算欄位（ratio ∈ [0,1]、正整數上限、min ≤ max）。
-    /// 回傳錯誤訊息字串；null = 通過。
-    /// </summary>
     private static string? ValidateBudgetConfig(NyaChatConfig c)
     {
         if (c.OutputReserveRatio is < 0 or > 1) return "OutputReserveRatio must be within [0, 1].";
-        if (c.FactTokenBudgetRatio is < 0 or > 1) return "FactTokenBudgetRatio must be within [0, 1].";
         if (c.SummaryTokenBudgetRatio is < 0 or > 1) return "SummaryTokenBudgetRatio must be within [0, 1].";
-        if (c.FactTokenBudgetRatio + c.SummaryTokenBudgetRatio > 1)
-            return "FactTokenBudgetRatio + SummaryTokenBudgetRatio must not exceed 1.";
         if (c.DefaultMaxContextTokens <= 0) return "DefaultMaxContextTokens must be positive.";
         if (c.MinOutputTokens <= 0) return "MinOutputTokens must be positive.";
         if (c.MaxOutputTokens <= 0) return "MaxOutputTokens must be positive.";
@@ -1864,7 +1672,6 @@ public static class NyaChatEndpoints
         var soulId      = soulIdEl.GetString()!.Trim();
         var displayName = displayEl.GetString()!.Trim();
 
-        // soul_id 只允許字母、數字、底線、連字號
         if (!System.Text.RegularExpressions.Regex.IsMatch(soulId, @"^[A-Za-z0-9_\-]{1,64}$"))
         {
             error = Results.BadRequest(ApiResponseHelper.Error("soul_id must be 1–64 chars: letters, digits, _ or -"));
@@ -1902,4 +1709,27 @@ public static class NyaChatEndpoints
             Forbidden   = forbidden,
         };
     }
+    private static HashSet<string> CurrentHistoryIds(HttpContext ctx, string userId)
+    {
+        var memory = ctx.RequestServices.GetRequiredService<NyaMemoryService>();
+        var topic = memory.GetActiveTopic(userId);
+        if (topic == null) return [];
+        var config = ctx.RequestServices.GetRequiredService<INyaConfigStore<NyaChatConfig>>().Current;
+        var profile = ctx.RequestServices.GetRequiredService<NyaLlmClient>().ResolveProfile(NyaLlmTasks.Chat);
+        var estimator = ctx.RequestServices.GetRequiredService<NyaTokenEstimator>();
+        var tools = ctx.RequestServices.GetRequiredService<NyaToolRegistry>().BuildLlmTools(userId, userId.Split(':')[0]);
+        var maxContext = profile.MaxContextTokens ?? config.DefaultMaxContextTokens;
+        var reserve = Math.Clamp((int)(maxContext * config.OutputReserveRatio), config.MinOutputTokens, config.MaxOutputTokens);
+        try
+        {
+            ctx.RequestServices.GetRequiredService<NyaPromptBuilder>().BuildTurn(
+                new NyaTurn { TurnId = "admin-preview", UserId = userId, CurrentTopicId = topic.TopicId }, memory,
+                ctx.RequestServices.GetRequiredService<NyaSoulProvider>().GetSoul(userId), config.MaxToolRounds,
+                maxContext - reserve - config.ContextSafetyMargin - estimator.Estimate(NyaLlmSerialization.BuildToolsJson(tools).ToJsonString()),
+                estimator, userId.Split(':')[0], out var ids, out _);
+            return ids;
+        }
+        catch (NyaMemoryException) { return []; }
+    }
+
 }

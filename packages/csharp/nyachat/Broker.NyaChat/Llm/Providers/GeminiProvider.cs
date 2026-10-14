@@ -4,7 +4,6 @@ using System.Text.Json.Nodes;
 
 namespace Broker.NyaChat;
 
-/// <summary>Google Gemini provider（<c>POST v1beta/models/{model}:generateContent</c>，含 function-calling，Doc 3 Plan B）。</summary>
 public sealed class GeminiProvider : INyaLlmProvider
 {
     private readonly IHttpClientFactory _httpClientFactory;
@@ -43,7 +42,6 @@ public sealed class GeminiProvider : INyaLlmProvider
         return ParseResponse(doc.RootElement);
     }
 
-    /// <summary>純函式：NyaLlmProviderRequest → Gemini request body。</summary>
     public static JsonObject BuildBody(NyaLlmProviderRequest pr)
     {
         var request = pr.Request;
@@ -109,7 +107,7 @@ public sealed class GeminiProvider : INyaLlmProvider
                 {
                     ["name"]        = t.Function.Name,
                     ["description"] = t.Function.Description,
-                    ["parameters"]  = NyaLlmSerialization.BuildJsonSchema(t.Function.Parameters)
+                    ["parametersJsonSchema"] = NyaLlmSerialization.BuildJsonSchema(t.Function.Parameters)
                 });
             body["tools"] = new JsonArray { new JsonObject { ["functionDeclarations"] = decls } };
         }
@@ -121,7 +119,6 @@ public sealed class GeminiProvider : INyaLlmProvider
         return body;
     }
 
-    /// <summary>純函式：Gemini response root → NyaLlmResponse。</summary>
     public static NyaLlmResponse? ParseResponse(JsonElement root)
     {
         if (!root.TryGetProperty("candidates", out var cands) || cands.ValueKind != JsonValueKind.Array || cands.GetArrayLength() == 0)

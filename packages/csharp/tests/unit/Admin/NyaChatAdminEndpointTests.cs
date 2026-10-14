@@ -116,14 +116,14 @@ public sealed class NyaChatAdminEndpointTests
             detail.RootElement.GetProperty("operator").GetProperty("role").GetString().Should().Be(LocalAdminRoles.SuperAdmin);
 
             Directory.CreateDirectory(Path.Combine(directory, "tools", "nya_tools.json"));
-            var toggle = await Request("POST", "/tools/{toolId}/toggle", "/tools/upsert_fact/toggle",
-                new() { ["toolId"] = "upsert_fact" }, "{\"enabled\":false}");
+            var toggle = await Request("POST", "/tools/{toolId}/toggle", "/tools/note_save/toggle",
+                new() { ["toolId"] = "note_save" }, "{\"enabled\":false}");
             using (toggle.Body)
             {
                 toggle.Status.Should().Be(500);
                 toggle.Body.RootElement.GetProperty("success").GetBoolean().Should().BeFalse();
             }
-            app.Services.GetRequiredService<NyaToolEnableStore>().Effective("upsert_fact", true).Should().BeTrue();
+            app.Services.GetRequiredService<NyaToolEnableStore>().Effective("note_save", true).Should().BeTrue();
 
             File.WriteAllText(Path.Combine(config.SoulsDirectory, "bad.json"), "{");
             var reload = await Request("POST", "/souls/reload", "/souls/reload");

@@ -99,6 +99,7 @@ public sealed class NyaChatSettingsTests
     [InlineData("{\"maxToolRounds\":4,\"MaxToolRounds\":5}")]
     [InlineData("{}")]
     [InlineData("[]")]
+
     public async Task Config_RejectsUnsafeOrIgnoredFieldsWithoutMutation(string body)
     {
         await using var host = new Host();
@@ -145,17 +146,17 @@ public sealed class NyaChatSettingsTests
         await using var host = new Host();
         var sites = await host.Request("GET", "/llm/call-sites");
         sites.Data.GetProperty("call_sites").EnumerateArray().Select(s => s.GetString()).Should()
-            .Equal("chat", "fact_extraction", "summarization", "__default__");
+            .Equal("chat", "summarization", "__default__");
         (await host.Request("PUT", "/llm/routes", body: "{\"call_site_id\":\"tool:search\",\"profile_id\":\"chat\"}")).Status.Should().Be(400);
         (await host.Request("PUT", "/llm/routes", body: "{\"call_site_id\":\"typo\",\"profile_id\":\"__default__\"}")).Status.Should().Be(400);
-        (await host.Request("PUT", "/llm/routes", body: "{\"call_site_id\":\"fact_extraction\",\"profile_id\":\"__default__\"}")).Status.Should().Be(200);
+        (await host.Request("PUT", "/llm/routes", body: "{\"call_site_id\":\"summarization\",\"profile_id\":\"__default__\"}")).Status.Should().Be(200);
         var routes = await host.Request("GET", "/llm/routes");
-        var extraction = routes.Data.EnumerateArray().Single(r => r.GetProperty("call_site_id").GetString() == "fact_extraction");
+        var extraction = routes.Data.EnumerateArray().Single(r => r.GetProperty("call_site_id").GetString() == "summarization");
         extraction.GetProperty("effective_profile_id").GetString().Should().Be("chat");
         extraction.GetProperty("source").GetString().Should().Be("__default__");
         var profiles = await host.Request("GET", "/llm/profiles");
         profiles.Data.EnumerateArray().Single(p => p.GetProperty("profile_id").GetString() == "chat")
-            .GetProperty("call_sites").EnumerateArray().Select(s => s.GetString()).Should().Contain("fact_extraction");
+            .GetProperty("call_sites").EnumerateArray().Select(s => s.GetString()).Should().Contain("summarization");
         (await host.Request("POST", "/llm/profiles", body: ProfileBody("custom"))).Status.Should().Be(200);
         (await host.Request("PUT", "/llm/routes", body: "{\"call_site_id\":\"summarization\",\"profile_id\":\"custom\"}")).Status.Should().Be(200);
         (await host.Request("DELETE", "/llm/profiles/{id}", id: "custom")).Status.Should().Be(200);
@@ -212,6 +213,11 @@ public sealed class NyaChatSettingsTests
     [InlineData("{\"unknown\":1}")]
     [InlineData("{\"model_overrides\":{\"custom\":\"bad\"}}")]
     [InlineData("{\"temperature\":0.2,\"temperature\":0.3}")]
+    [InlineData("{\"extra_body\":[]}")]
+    [InlineData("{\"extra_body\":{\"model\":\"other\"}}")]
+    [InlineData("{\"extra_body\":{\"messages\":[]}}")]
+    [InlineData("{\"extra_body\":{\"tools\":[]}}")]
+    [InlineData("{\"extra_body\":{\"stream\":true}}")]
     public async Task Profiles_RejectInvalidParams(string parameters)
     {
         await using var host = new Host();
@@ -231,6 +237,37 @@ public sealed class NyaChatSettingsTests
         await using var host = new Host();
         var body = JsonSerializer.Serialize(new { profile_id = "bad", provider, base_url = url, model, params_json = "{}" });
         (await host.Request("POST", "/llm/profiles", body: body)).Status.Should().Be(400);
+    }
+
+    [Theory]
+    [InlineData("[]")]
+    [InlineData("{\"model\":\"other\"}")]
+    [InlineData("{\"messages\":[]}")]
+    [InlineData("{\"tools\":[]}")]
+    [InlineData("{\"stream\":true}")]
+    public async Task Profiles_RejectInvalidExtraBodyField(string extra)
+    {
+        await using var host = new Host();
+        var body = System.Text.Json.Nodes.JsonNode.Parse(ProfileBody("bad-extra"))!.AsObject();
+        body["extra_body"] = System.Text.Json.Nodes.JsonNode.Parse(extra);
+        (await host.Request("POST", "/llm/profiles", body: body.ToJsonString())).Status.Should().Be(400);
+        host.App.Services.GetRequiredService<NyaLlmProfileStore>().GetProfile("bad-extra").Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Profiles_PersistAndExposeExtraBodyFieldAndUseItForTheSavedProfileRequest()
+    {
+        await using var host = new Host();
+        var body = System.Text.Json.Nodes.JsonNode.Parse(ProfileBody("extra"))!.AsObject();
+        body["extra_body"] = System.Text.Json.Nodes.JsonNode.Parse("{\"thinking\":{\"type\":\"disabled\"}}");
+        (await host.Request("POST", "/llm/profiles", body: body.ToJsonString())).Status.Should().Be(200);
+        var effective = await host.Request("GET", "/llm/profiles/{id}/effective", id: "extra");
+        effective.Data.GetProperty("extra_body").GetProperty("thinking").GetProperty("type").GetString().Should().Be("disabled");
+        var listed = await host.Request("GET", "/llm/profiles");
+        listed.Data.EnumerateArray().Single(p => p.GetProperty("profile_id").GetString() == "extra").GetProperty("extra_body").GetProperty("thinking").GetProperty("type").GetString().Should().Be("disabled");
+        (await host.Request("POST", "/llm/profiles/{id}/test", id: "extra")).Status.Should().Be(200);
+        using var wire = JsonDocument.Parse(host.Http.Body!);
+        wire.RootElement.GetProperty("thinking").GetProperty("type").GetString().Should().Be("disabled");
     }
 
     private static string ProfileBody(string id, string parameters = "{}") => JsonSerializer.Serialize(new
@@ -266,7 +303,7 @@ public sealed class NyaChatSettingsTests
         {
             effective.Data.GetProperty("sampling").EnumerateObject().Should().BeEmpty();
             sent.TryGetProperty("temperature", out _).Should().BeFalse();
-            sent.TryGetProperty(budgetKey, out _).Should().BeFalse();
+            sent.GetProperty(budgetKey).GetInt32().Should().Be(32);
         }
         else
             sent.GetProperty(budgetKey).GetInt32().Should().Be(32);

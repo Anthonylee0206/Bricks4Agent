@@ -31,6 +31,7 @@ function ProfileEditor({ profileId, templates, catalog, onSave, onCancel, saving
     template: '',
   });
   const [paramsJson, setParamsJson] = useState('{}');
+  const [extraBodyJson, setExtraBodyJson] = useState('{}');
   const [jsonError, setJsonError] = useState(null);
   const [selectedTemplate, setSelectedTemplate] = useState('');
 
@@ -53,6 +54,7 @@ function ProfileEditor({ profileId, templates, catalog, onSave, onCancel, saving
             template:   p.template || '',
           });
           setParamsJson(p.params_json || '{}');
+          setExtraBodyJson(JSON.stringify(parseParamsJson(p.params_json).extra_body || {}, null, 2));
         }
       }
       setLoadingProfile(false);
@@ -68,8 +70,11 @@ function ProfileEditor({ profileId, templates, catalog, onSave, onCancel, saving
       provider: tpl.provider,
       base_url: tpl.defaultBaseUrl,
       template: tplId,
+      model: tpl.defaultModel || f.model,
     }));
-    const merged = { ...parseParamsJson(paramsJson), ...(tpl.defaultParams || {}) };
+    const merged = { ...(tpl.defaultParams || {}) };
+    if (tpl.extraBody) merged.extra_body = tpl.extraBody;
+    setExtraBodyJson(JSON.stringify(tpl.extraBody || {}, null, 2));
     setParamsJson(JSON.stringify(merged, null, 2));
     setJsonError(null);
   }
@@ -87,7 +92,8 @@ function ProfileEditor({ profileId, templates, catalog, onSave, onCancel, saving
 
   function handleJsonBlur(raw) {
     try {
-      JSON.parse(raw);
+      const params = JSON.parse(raw);
+      setExtraBodyJson(JSON.stringify(params.extra_body || {}, null, 2));
       setJsonError(null);
     } catch (e) {
       setJsonError('JSON 格式錯誤：' + e.message);
@@ -99,9 +105,16 @@ function ProfileEditor({ profileId, templates, catalog, onSave, onCancel, saving
     try { parsed = JSON.parse(paramsJson); }
     catch (e) { setJsonError('JSON 格式錯誤：' + e.message); return; }
 
+    try {
+      const extra = JSON.parse(extraBodyJson);
+      if (!extra || Array.isArray(extra) || typeof extra !== 'object') throw new Error('extra_body 必須是 JSON 物件');
+      if (['model', 'messages', 'tools', 'stream'].some(key => Object.hasOwn(extra, key))) throw new Error('extra_body 不可覆寫 model、messages、tools、stream');
+      parsed.extra_body = extra;
+    } catch (e) { setJsonError(e.message); return; }
     const payload = {
       ...form,
       params_json: JSON.stringify(parsed),
+      extra_body: parsed.extra_body,
     };
     onSave(payload, isNew);
   }
@@ -200,6 +213,10 @@ function ProfileEditor({ profileId, templates, catalog, onSave, onCancel, saving
         </div>
 
         <div style={{ width: 320, flexShrink: 0, display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <Panel title="額外請求內容 extra_body">
+            <textarea aria-label="extra_body" value={extraBodyJson} onChange={e => setExtraBodyJson(e.target.value)}
+              style={{ width: '100%', minHeight: 100, background: 'var(--c-surface)', color: 'var(--c-fg)' }} />
+          </Panel>
           <Panel title="params_json（取樣 / 思考參數）">
             <div style={{ padding: '10px 14px', display: 'flex', flexDirection: 'column', gap: 6 }}>
               <textarea
@@ -233,6 +250,7 @@ function ProfileEditor({ profileId, templates, catalog, onSave, onCancel, saving
               <div>{origProfile.effective.precedence}</div>
               <div>取樣落點：{origProfile.effective.sampling_location}</div>
               <pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{JSON.stringify(origProfile.effective.sampling, null, 2)}</pre>
+              <div>額外請求內容 extra_body：{JSON.stringify(origProfile.effective.extra_body)}</div>
               <div>思考欄位：{JSON.stringify(origProfile.effective.thinking)}</div>
               <div>{origProfile.effective.output_limit}</div>
             </div>
@@ -328,7 +346,8 @@ function ProfilesView({ onEdit, onAdd }) {
                           <details>
                             <summary>依已儲存 Profile 推導的參數（{p.effective?.sampling_location}）</summary>
                             <pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{JSON.stringify(p.effective?.sampling, null, 2)}</pre>
-                            <div>思考欄位：{JSON.stringify(p.effective?.thinking)}</div>
+                            <div>額外請求內容 extra_body：{JSON.stringify(origProfile.effective.extra_body)}</div>
+              <div>思考欄位：{JSON.stringify(p.effective?.thinking)}</div>
                           </details>
                         </TD>
                         <TD center>
@@ -445,7 +464,7 @@ function RoutingView() {
                             </div>
                           </TD>
                           <TD>
-                            <div>{cs === "chat" ? "現役" : cs === "fact_extraction" ? "無生產呼叫端；設定不會啟動萃取或改變筆記工具" : cs === "summarization" ? (resolved?.execution_enabled ? "自動摘要已開啟" : "自動摘要已關閉，不執行、不注入") : "Fallback"}</div><div className="mono">{resolved?.effective_profile_id || '未設定'}</div>
+                            <div>{cs === "chat" ? "現役" : cs === "summarization" ? (resolved?.execution_enabled ? "自動摘要已開啟" : "自動摘要已關閉，不執行、不注入") : "Fallback"}</div><div className="mono">{resolved?.effective_profile_id || '未設定'}</div>
                             <div style={{ fontSize: 12, color: 'var(--c-fg2)' }}>{resolved?.provider} · {resolved?.model}</div>
                             {resolved?.source === '__default__' && cs !== '__default__' && <div>回退至系統預設</div>}
                           </TD>

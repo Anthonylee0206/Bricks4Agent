@@ -1,183 +1,85 @@
 using System.Text.Json;
 using Broker.NyaChat.Abstractions;
+using static Broker.NyaChat.FactToolPlugin;
 
 namespace Broker.NyaChat;
 
-/// <summary>
-/// 內建話題操作工具插件：<c>new_topic</c> / <c>switch_topic</c> / <c>rename_topic</c>。
-/// </summary>
-/// <remarks>
-/// <para>
-/// 讓 LLM 能在對話中開新話題、切換話題、重新命名話題；每次執行都寫審計，並回傳結構化結果給 LLM
-/// （由 Orchestrator 統一閉環餵回，產生自然語言確認）。預設擁有、預設開啟
-/// （<see cref="NyaToolSchema.DefaultEnabled"/> = true、<see cref="NyaToolSchema.RequiredPermission"/> = null）。
-/// </para>
-/// <para>
-/// 切換時機（與 Orchestrator 設計一致）：<see cref="NyaToolContext.ConversationId"/> 為「本輪」話題；
-/// new/switch 只改 DB 的 active 話題，<b>本輪訊息仍寫舊話題、下一輪起生效</b>，故此插件不需處理本輪歸屬。
-/// rename 預設改的是 <see cref="NyaToolContext.ConversationId"/>（當前話題），除非指定 topic。
-/// </para>
-/// </remarks>
 public sealed class TopicToolPlugin : INyaToolPlugin
 {
-    private readonly NyaMemoryService _memoryService;
-    private readonly NyaAuditLogger _auditLogger;
-    private readonly ILogger<TopicToolPlugin> _logger;
+    private readonly NyaMemoryService _memory;
+    private readonly NyaAuditLogger _audit;
 
-    public TopicToolPlugin(
-        NyaMemoryService memoryService,
-        NyaAuditLogger auditLogger,
-        ILogger<TopicToolPlugin> logger)
+    public TopicToolPlugin(NyaMemoryService memoryService, NyaAuditLogger auditLogger, ILogger<TopicToolPlugin> logger)
     {
-        _memoryService = memoryService;
-        _auditLogger = auditLogger;
-        _logger = logger;
+        _memory = memoryService;
+        _audit = auditLogger;
     }
 
     public IReadOnlyList<NyaToolSchema> GetTools() => new[]
     {
-        new NyaToolSchema
-        {
-            Name        = "new_topic",
-            Description = "開一個新話題並切換過去。話題就像 LINE 裡另開的聊天室：新話題從空白的對話開始，原本話題的對話保留，之後可以切回去。用於使用者想另開一個聊天室時。",
-            Group       = "topic",
-            DefaultEnabled = true,
-            CapabilityStatement = "我可以幫你開新話題、在不同話題之間切換，就像換聊天室。",
-            Parameters = new[]
-            {
-                new NyaToolParam { Name = "title", Required = false, Description = "新話題的標題（可選，省略則自動命名）" },
-            }
-        },
-        new NyaToolSchema
-        {
-            Name        = "switch_topic",
-            Description = "切換到一個已存在的話題。用於使用者想回到先前的某個話題繼續。",
-            Group       = "topic",
-            DefaultEnabled = true,
-            CapabilityStatement = "我可以幫你切換到先前的話題。",
-            Parameters = new[]
-            {
-                new NyaToolParam { Name = "topic", Required = true, Description = "目標話題的 topic_id 或標題" },
-            }
-        },
-        new NyaToolSchema
-        {
-            Name        = "rename_topic",
-            Description = "重新命名話題。預設改目前話題的標題，除非指定 topic。",
-            Group       = "topic",
-            DefaultEnabled = true,
-            CapabilityStatement = "我可以幫你把話題改名。",
-            Parameters = new[]
-            {
-                new NyaToolParam { Name = "title", Required = true, Description = "新的話題標題" },
-                new NyaToolParam { Name = "topic", Required = false, Description = "要改名的話題 topic_id 或舊標題（可選，省略則為目前話題）" },
-            }
-        }
+        TopicSchema("new_topic", "立即開新聊天室並切換；整則使用者訊息歸最後聊天室，歷史保留原位。", Text("title", max: 128)),
+        TopicSchema("switch_topic", "立即切換現有聊天室；可用 ID 或標題，重複標題回候選，不能默選。", Text("topic", true, 128)),
+        TopicSchema("rename_topic", "改目前聊天室名稱；指定 topic 可改其他聊天室，重複標題需選 ID。", Text("title", true, 128), Text("topic", max: 128)),
+        TopicSchema("topic_list", "完整分頁列出目前會話範圍的聊天室；scope current 只列目前聊天室，title 精確篩選會回所有同名候選。", Choice("scope", "all", "current"), Text("title", max: 128), Number("limit", 1, 100), Text("cursor", max: 128))
     };
+
+    private static NyaToolSchema TopicSchema(string name, string description, params NyaToolParam[] parameters)
+        => new() { Name = name, Description = description, CapabilityStatement = description, Group = "topic", DefaultEnabled = true, Parameters = parameters };
+
+    private static object TopicEntry(NyaTopicEntry topic) => new { topic_id = topic.TopicId, title = topic.Title, is_active = topic.IsActive,
+        created_at = topic.CreatedAt, message_count = topic.MsgCount };
 
     public Task<NyaToolResult> ExecuteAsync(NyaToolContext context, CancellationToken cancellationToken)
     {
-        var userId = context.UserId;
-        var shortUser = userId[..Math.Min(8, userId.Length)];
-        var currentTopicId = context.ConversationId;
-
         try
         {
+            if (context.Scope == "external") return Task.FromResult(NyaToolResult.Error("external_scope", "scope", "外部明確會話不能操作聊天室。"));
+            var validation = NyaToolArgValidator.ValidateError(GetTools().First(s => s.Name == context.ToolName), context.ArgumentsJson);
+            if (validation != null) return Task.FromResult(NyaToolResult.Error("invalid_args", validation.Field, validation.Message));
             using var doc = JsonDocument.Parse(context.ArgumentsJson);
             var args = doc.RootElement;
-            string? Arg(string name) => args.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String
-                ? v.GetString() : null;
-
-            switch (context.ToolName)
+            var turn = _memory.GetTurn(context.UserId, context.TraceId);
+            var current = turn?.CurrentTopicId ?? context.ConversationId;
+            if (context.ToolName == "topic_list")
             {
-                case "new_topic":
-                {
-                    var title = Arg("title");
-                    var topic = _memoryService.CreateNewTopic(userId, title);
-                    _auditLogger.LogTopicCreate(userId, topic.TopicId, topic.Title);
-                    _logger.LogInformation("[NyaChat/TopicTool] new_topic id={Id} user={User}", topic.TopicId, shortUser);
-
-                    return Ok(new
-                    {
-                        success = true,
-                        action = "new_topic",
-                        topic_id = topic.TopicId,
-                        title = topic.Title,
-                        note = "新話題已建立並切換；接下來的對話在新話題裡，原本的對話保留在舊話題。"
-                    });
-                }
-
-                case "switch_topic":
-                {
-                    var key = Arg("topic");
-                    if (string.IsNullOrWhiteSpace(key))
-                        return Fail("missing_topic", "請提供要切換的話題 topic_id 或標題。");
-
-                    var target = _memoryService.ResolveTopic(userId, key);
-                    if (target == null)
-                        return Fail("topic_not_found", $"找不到話題「{key}」，請確認名稱或 topic_id。");
-
-                    _memoryService.SwitchTopic(userId, target.TopicId);
-                    _auditLogger.LogTopicSwitch(userId, currentTopicId, target.TopicId);
-                    _logger.LogInformation("[NyaChat/TopicTool] switch_topic → {Id} user={User}", target.TopicId, shortUser);
-
-                    return Ok(new
-                    {
-                        success = true,
-                        action = "switch_topic",
-                        topic_id = target.TopicId,
-                        title = target.Title,
-                        note = "已切換話題；本輪對話仍屬原話題，下一則訊息起進入目標話題。"
-                    });
-                }
-
-                case "rename_topic":
-                {
-                    var title = Arg("title");
-                    if (string.IsNullOrWhiteSpace(title))
-                        return Fail("missing_title", "請提供新的話題標題。");
-
-                    var key = Arg("topic");
-                    var targetTopicId = !string.IsNullOrWhiteSpace(key)
-                        ? _memoryService.ResolveTopic(userId, key!)?.TopicId
-                        : currentTopicId;
-
-                    if (string.IsNullOrWhiteSpace(targetTopicId))
-                        return Fail("topic_not_found", "找不到要改名的話題。");
-
-                    var renamed = _memoryService.RenameTopic(userId, targetTopicId!, title!);
-                    if (renamed == null)
-                        return Fail("topic_not_found", "找不到要改名的話題。");
-
-                    _auditLogger.LogTopicRename(userId, renamed.TopicId, title!);
-                    _logger.LogInformation("[NyaChat/TopicTool] rename_topic {Id} user={User}", renamed.TopicId, shortUser);
-
-                    return Ok(new
-                    {
-                        success = true,
-                        action = "rename_topic",
-                        topic_id = renamed.TopicId,
-                        title = renamed.Title
-                    });
-                }
-
-                default:
-                    return Fail("unknown_tool", "未知的話題工具。");
+                var scope = Str(args, "scope") ?? "all";
+                var title = Str(args, "title");
+                var topics = _memory.ListTopicsWithCount(context.UserId).Where(t => scope != "current" || t.TopicId == current).Where(t => title == null || t.Title == title).ToList();
+                return Task.FromResult(_memory.PageMemory(context, JsonSerializer.Serialize(new { tool = "topic_list", scope, title, current = scope == "current" ? current : null }), Str(args, "cursor"), topics.Select(t => t.TopicId).ToArray(), Int(args, "limit", 20), id =>
+                    topics.FirstOrDefault(t => t.TopicId == id) is { } topic ? TopicEntry(topic) : null));
             }
+            NyaTopic? target;
+            if (context.ToolName == "new_topic")
+            {
+                target = turn == null ? _memory.CreateNewTopic(context.UserId, Str(args, "title")) : _memory.ChangeTurnTopic(turn, null, Str(args, "title"));
+            }
+            else
+            {
+                var key = Str(args, "topic") ?? current;
+                var candidates = _memory.FindTopics(context.UserId, key ?? "");
+                if (candidates.Count == 0) return Task.FromResult(NyaToolResult.Error("topic_not_found", "topic", "找不到聊天室。"));
+                if (candidates.Count > 1) return Task.FromResult(NyaToolResult.Envelope(new { candidates = candidates.Select(TopicEntry) }, "needs_confirmation"));
+                var id = candidates[0].TopicId;
+                if (context.ToolName == "rename_topic")
+                {
+                    if (candidates[0].Title == Str(args, "title")) return Task.FromResult(NyaToolResult.Envelope(new { topic_id = id }, "noop"));
+                    target = _memory.RenameTopic(context.UserId, id, Str(args, "title")!, context.TraceId);
+                }
+                else
+                {
+                    if (id == current) return Task.FromResult(NyaToolResult.Envelope(new { topic_id = id }, "noop"));
+                    target = turn == null ? _memory.SwitchTopic(context.UserId, id) : _memory.ChangeTurnTopic(turn, id);
+                }
+            }
+            if (context.ToolName == "new_topic") _audit.LogTopicCreate(context.UserId, target!.TopicId, target.Title);
+            else if (context.ToolName == "switch_topic") _audit.LogTopicSwitch(context.UserId, current, target!.TopicId);
+            else _audit.LogTopicRename(context.UserId, target!.TopicId, target.Title!);
+            return Task.FromResult(NyaToolResult.Envelope(new { topic_id = target!.TopicId, title = target.Title, origin_topic_id = turn?.StartTopicId, rule = "立即生效；整則使用者訊息歸最後所在聊天室。" },
+                effects: new object[] { new { action = context.ToolName, topic_id = target.TopicId } }));
         }
-        catch (Exception ex)
+        catch (NyaMemoryException ex)
         {
-            // Bug #10：例外細節只進 server 端 log/審計；回饋 LLM 的一律泛用訊息。
-            _auditLogger.LogToolResult(userId, context.ToolName, ex.Message, "error");
-            _logger.LogWarning(ex, "[NyaChat/TopicTool] Failed to execute {Tool}", context.ToolName);
-            return Task.FromResult(NyaToolResult.Fail(NyaToolError.InternalJson()));
+            return Task.FromResult(NyaToolResult.Error(ex.Code, ex.Field, ex.Message));
         }
     }
-
-    private static Task<NyaToolResult> Ok(object payload)
-        => Task.FromResult(NyaToolResult.Ok(JsonSerializer.Serialize(payload)));
-
-    private static Task<NyaToolResult> Fail(string error, string message)
-        => Task.FromResult(NyaToolResult.Fail(
-            JsonSerializer.Serialize(new { success = false, error, message })));
 }

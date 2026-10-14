@@ -3,6 +3,7 @@ const { useState, useEffect, useCallback } = React;
 const C_TABS = [
   { id: 'overview',  label: '概覽',     icon: 'user'     },
   { id: 'messages',  label: '訊息',     icon: 'message'  },
+  { id: 'turns', label: '輪次', icon: 'list' },
   { id: 'topics',    label: '聊天室',   icon: 'list'     },
   { id: 'facts',     label: '筆記',     icon: 'database' },
   { id: 'summaries', label: '摘要',     icon: 'archive'  },
@@ -45,7 +46,7 @@ function PageC({ userId, onNavigate, params = new URLSearchParams() }) {
     let badge;
     if (overview) {
       if (t.id === 'messages')  badge = overview.messages.total - overview.messages.deleted;
-      if (t.id === 'facts')     badge = overview.facts.total_active;
+      if (t.id === 'facts')     badge = overview.notes.total_active;
       if (t.id === 'summaries') badge = overview.summaries.total_versions;
     }
     if (t.id === 'topics' && topicCount != null) badge = topicCount;
@@ -77,6 +78,7 @@ function PageC({ userId, onNavigate, params = new URLSearchParams() }) {
         {tab === 'overview'  && <TabC1 userId={userId} overview={overview} loading={ovLoading} error={ovError} onRefresh={refreshAll} />}
         {tab === 'messages'  && <TabC2 userId={userId} initialTopic={params.get('topic') || ''} onTopicChange={topic => onNavigate('user/' + encodeURIComponent(userId) + '?tab=messages' + (topic ? '&topic=' + encodeURIComponent(topic) : ''))} onChanged={refreshAll} />}
         {tab === 'topics'    && <TabCTopics userId={userId} onChanged={() => { loadOverview(); loadTopicCount(); }} />}
+        {tab === 'turns' && <TabCTurns userId={userId} />}
         {tab === 'facts'     && <TabC4 userId={userId} onChanged={loadOverview} />}
         {tab === 'summaries' && <TabC5 userId={userId} onChanged={loadOverview} />}
         {tab === 'audit' && nyaCanRead('audit') && <TabC6 key={params.get('trace') || ''} userId={userId} initialTrace={params.get('trace') || ''} />}
@@ -90,7 +92,7 @@ function TabC1({ userId, overview, loading, error, onRefresh }) {
 
   async function handleNuke() {
     if (!overview) return;
-    const { messages, facts, summaries } = overview;
+    const { messages, notes, summaries } = overview;
     const ok = await showConfirm(
       `清除全部記憶 — ${userId}？`,
       `將軟刪除 ${messages.active + messages.summarized} 筆訊息、硬刪除所有筆記及歷史版本（含已過期）、刪除 ${summaries.total_versions} 個摘要，並清除聊天室與遺忘紀錄（Soul 設定保留）。此操作不可還原。`
@@ -99,7 +101,7 @@ function TabC1({ userId, overview, loading, error, onRefresh }) {
     setNuke(true);
     const res = await apiCall('DELETE', `users/${encodeURIComponent(userId)}`, { confirm: 'all' });
     if (res.success) {
-      showToast(`已清除全部記憶：訊息 ${res.data.soft_deleted_messages}、筆記版本 ${res.data.deleted_facts}、摘要 ${res.data.deleted_summaries}、聊天室 ${res.data.deleted_topics}、遺忘紀錄 ${res.data.cleared_forgotten}`, 'success');
+      showToast(`已清除全部記憶：訊息 ${res.data.soft_deleted_messages}、筆記版本 ${res.data.deleted_note_versions}、摘要 ${res.data.deleted_summaries}、聊天室 ${res.data.deleted_topics}`, 'success');
       onRefresh();
     }
     setNuke(false);
@@ -118,7 +120,7 @@ function TabC1({ userId, overview, loading, error, onRefresh }) {
   );
   if (!overview) return <EmptyState loading={loading} />;
 
-  const { messages: m, facts: f, summaries: s } = overview;
+  const { messages: m, notes: f, summaries: s } = overview;
   const catEntries = Object.entries(f.categories || {});
   const maxCat = Math.max(1, ...catEntries.map(([, c]) => c));
 
@@ -130,7 +132,7 @@ function TabC1({ userId, overview, loading, error, onRefresh }) {
 
       <StatTiles cols={4} items={[
         { label: '目前聊天室', value: overview.active_topic?.title || overview.active_topic?.id || '尚未建立' },
-        { label: '目前聊天室的候選近期訊息', value: m.recent_history, sub: `上限 ${overview.short_term_message_limit} 則`, accent: 'var(--c-accent-fg)' },
+        { label: '目前聊天室的近期訊息預覽', value: m.recent_history, sub: `上限 ${overview.short_term_message_limit} 則`, accent: 'var(--c-accent-fg)' },
         { label: '未過期筆記', value: f.total_active },
         { label: '遺忘紀錄', value: overview.forgotten_count },
       ]} />
@@ -167,7 +169,7 @@ function TabC1({ userId, overview, loading, error, onRefresh }) {
         <Panel title="時間資訊">
           <KVGrid cols={1} items={[
             { label: '最後訊息時間', value: fmtTime(overview.last_message_at), mono: true },
-            { label: '最後筆記更新（含已過期現行版本）', value: fmtTime(overview.last_fact_updated_at), mono: true },
+            { label: '最後筆記更新（含已過期現行版本）', value: fmtTime(overview.last_note_updated_at), mono: true },
           ]} />
         </Panel>
         <SoulBindPanel userId={userId} availableSouls={overview.available_souls || []} currentSoulId={overview.bound_soul_id} effectiveSoulId={overview.effective_soul_id} soulReason={overview.soul_reason} onSoulChanged={onRefresh} />
@@ -356,7 +358,9 @@ function TabC2({ userId, onChanged, initialTopic = '', onTopicChange }) {
                           <div style={{ display: 'flex', gap: 4 }}>
                             {isDel && <Badge color="var(--c-danger)">已刪除</Badge>}
                             {isSum && <Badge>歷史摘要旗標</Badge>}
-                            {(msg.exclusion_reasons || []).map(reason => <Badge key={reason}>{({ forgotten: '受遺忘規則排除', other_conversation: '非目前聊天室', outside_recent_window: '超出近期窗口', summarized: '摘要啟用時由摘要接手' })[reason] || reason}</Badge>)}
+                            {msg.turn_status === 'failed' && <Badge color="var(--c-danger)">失敗輪：使用者訊息保留</Badge>}
+                            {msg.turn_status === 'pending' && <Badge>處理中</Badge>}
+                            {(msg.exclusion_reasons || []).map(reason => <Badge key={reason}>{({ forgotten: '受隱藏引用排除', other_conversation: '非目前聊天室', outside_recent_window: '超出近期窗口', context_budget: '上下文預算不足', summarized: '摘要啟用時由摘要接手' })[reason] || reason}</Badge>)}
                           </div>
                         </td>
                         <td className="mono" style={{ padding: '8px 12px', fontSize: 11, color: 'var(--c-fg2)', whiteSpace: 'nowrap' }}>
@@ -390,6 +394,9 @@ function TabC2({ userId, onChanged, initialTopic = '', onTopicChange }) {
                   { label: 'Role',       value: detailMsg.role,       mono: true },
                   { label: 'Sequence',   value: detailMsg.sequence,   mono: true },
                   { label: 'Topic ID',   value: detailMsg.topic_id || '—', mono: true },
+                  { label: '原始聊天室', value: detailMsg.origin_topic_id || '—', mono: true },
+                  { label: '輪次狀態', value: detailMsg.turn_status || '舊資料' },
+                  { label: 'Turn ID', value: detailMsg.turn_id || '—', mono: true },
                   { label: 'Is Deleted',    value: detailMsg.is_deleted    ? '是' : '否' },
                   { label: 'Is Summarized', value: detailMsg.is_summarized ? '是' : '否' },
                   { label: '建立時間',    value: fmtTime(detailMsg.created_at), mono: true, wide: true },
@@ -582,3 +589,32 @@ function TabCTopics({ userId, onChanged }) {
 }
 
 window.PageC = PageC;
+
+
+function TabCTurns({ userId }) {
+  const [turns, setTurns] = useState([]);
+  const [offset, setOffset] = useState(0);
+  const [error, setError] = useState('');
+  const [work, setWork] = useState(null);
+  async function load(page = 0) {
+    const res = await apiCall('GET', 'users/' + encodeURIComponent(userId) + '/turns?limit=50&offset=' + page);
+    if (res.success) { setTurns(res.data.turns); setError(''); } else setError(res.message);
+  }
+  useEffect(() => { setOffset(0); load(); }, [userId]);
+  async function inspect(turn) {
+    const res = await apiCall('GET', 'users/' + encodeURIComponent(userId) + '/turns/' + encodeURIComponent(turn.turnId) + '/work');
+    if (res.success) setWork({ turn, items: res.data.work }); else setError(res.message);
+  }
+  return <ContentArea><Panel title="輪次狀態" subtitle="失敗輪保留使用者訊息；單一 broker 實例依使用者排隊">
+    {error && <div role="alert">{error}</div>}
+    {turns.map(turn => <div key={turn.turnId} style={{ padding: 14, borderBottom: '1px solid var(--c-border)' }}>
+      <div>{turn.turnId} · {({ pending: '處理中', completed: '完成', failed: '失敗' })[turn.status]} · {turn.failureReason || ''}</div>
+      <div>{turn.scope} · 原始聊天室 {turn.startTopicId} → 最後聊天室 {turn.currentTopicId}</div>
+      <div>{fmtTime(turn.createdAt)} · 結束 {fmtTime(turn.finishedAt)}</div>
+      <Button size="sm" onClick={() => inspect(turn)}>已完成效果與工作紀錄</Button>
+    </div>)}
+    <Button disabled={offset === 0} onClick={() => { const page = Math.max(0, offset - 50); setOffset(page); load(page); }}>上一頁</Button>
+    <Button disabled={turns.length < 50} onClick={() => { const page = offset + 50; setOffset(page); load(page); }}>下一頁</Button>
+    {work && <Modal title="輪次原始工作紀錄" onClose={() => setWork(null)}><JsonBlock raw={JSON.stringify(work, null, 2)} /></Modal>}
+  </Panel></ContentArea>;
+}

@@ -2,14 +2,6 @@ using Broker.NyaChat.Abstractions;
 
 namespace Broker.Services.NyaTools;
 
-/// <summary>
-/// broker adapter 插件：交通查詢（大項四 4A）。<b>一個插件暴露 4 個工具</b>
-/// （rail / hsr / bus / flight），示範「插件:工具 = 一對多」，依 <see cref="NyaToolContext.ToolName"/> 分派。
-/// </summary>
-/// <remarks>
-/// 包 <see cref="HighLevelQueryToolMediator"/> 的台鐵 / 高鐵 / 公車 / 航班查詢。
-/// D2：<paramref name="personalizeOutput"/> 控制走二次 LLM 個性化（預設）或維持 worker 原樣輸出。
-/// </remarks>
 public sealed class TransportToolPlugin : INyaToolPlugin
 {
     private readonly HighLevelQueryToolMediator _mediator;
@@ -48,7 +40,7 @@ public sealed class TransportToolPlugin : INyaToolPlugin
     {
         var query = NyaToolArgs.GetString(context.ArgumentsJson, "query");
         if (string.IsNullOrWhiteSpace(query))
-            return NyaToolResult.Fail("請提供更完整的查詢條件，例如：板橋 高雄 明天上午。");
+            return NyaToolResult.Error("missing_query", "query", "請提供更完整的查詢條件，例如：板橋 高雄 明天上午。");
 
         var channel = context.ChannelType;
         var userId  = context.UserId;
@@ -63,10 +55,10 @@ public sealed class TransportToolPlugin : INyaToolPlugin
         };
 
         if (!result.Success || string.IsNullOrWhiteSpace(result.Reply))
-            return NyaToolResult.Fail($"[交通查詢失敗] {result.Error ?? "無法取得查詢結果，請稍後再試。"}");
+            return NyaToolResult.Error("transport_failed", "query", "無法取得查詢結果，請稍後再試。");
 
         return _personalizeOutput
-            ? NyaToolResult.Ok(result.Reply)
-            : NyaToolResult.Ok(result.Reply, new[] { result.Reply });
+            ? NyaToolResult.Envelope(new { reply = result.Reply })
+            : NyaToolResult.Envelope(new { reply = result.Reply }, directReplies: new[] { result.Reply });
     }
 }

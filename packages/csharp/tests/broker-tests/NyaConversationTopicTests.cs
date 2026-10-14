@@ -39,8 +39,8 @@ public static class NyaConversationTopicTests
             TaskRouting = new()
             {
                 ["chat"] = "fake_chat",
-                ["fact_extraction"] = "fake_chat",
-                ["summarization"] = "fake_chat"
+                ["summarization"] = "fake_chat",
+
             }
         });
         return services.BuildServiceProvider();

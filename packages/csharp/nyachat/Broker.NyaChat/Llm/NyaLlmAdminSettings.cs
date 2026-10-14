@@ -7,7 +7,7 @@ public static class NyaLlmAdminSettings
 {
     public static IReadOnlyList<string> CallSites { get; } = Array.AsReadOnly(new[]
     {
-        NyaLlmTasks.Chat, NyaLlmTasks.FactExtraction, NyaLlmTasks.Summarization, NyaLlmProfileStore.DefaultCallSite
+        NyaLlmTasks.Chat, NyaLlmTasks.Summarization, NyaLlmProfileStore.DefaultCallSite
     });
 
     public static string? Validate(NyaLlmProfileEntry entry, IEnumerable<INyaLlmProvider> providers)
@@ -29,6 +29,13 @@ public static class NyaLlmAdminSettings
             foreach (var param in doc.RootElement.EnumerateObject())
             {
                 if (!keys.Add(param.Name)) return $"重複參數：{param.Name}";
+                if (param.Name == "extra_body")
+                {
+                    if (param.Value.ValueKind != JsonValueKind.Object) return "extra_body 必須是 JSON object。";
+                    if (param.Value.EnumerateObject().Any(p => p.Name is "model" or "messages" or "tools" or "stream"))
+                        return "extra_body 不可覆寫 model、messages、tools、stream。";
+                    continue;
+                }
                 if (param.Name == "model_overrides")
                 {
                     if (param.Value.ValueKind == JsonValueKind.Null) continue;
@@ -61,6 +68,21 @@ public static class NyaLlmAdminSettings
         return null;
     }
 
+    public static string? ValidateExtraBody(string paramsJson)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(paramsJson);
+            if (doc.RootElement.ValueKind != JsonValueKind.Object) return "params_json 必須是 JSON object。";
+            if (!doc.RootElement.TryGetProperty("extra_body", out var extra)) return null;
+            if (extra.ValueKind != JsonValueKind.Object) return "extra_body 必須是 JSON object。";
+            if (extra.EnumerateObject().Any(p => p.Name is "model" or "messages" or "tools" or "stream"))
+                return "extra_body 不可覆寫 model、messages、tools、stream。";
+            return null;
+        }
+        catch (JsonException ex) { return ex.Message; }
+    }
+
     public static JsonObject Sampling(NyaLlmProfile profile, NyaLlmRequest request)
     {
         var gemini = profile.Provider.Equals("gemini", StringComparison.OrdinalIgnoreCase);
@@ -69,6 +91,7 @@ public static class NyaLlmAdminSettings
             ["temperature"] = request.Temperature,
             [gemini ? "topP" : "top_p"] = request.TopP
         };
+        if (!profile.SendTemperature) sampling.Remove("temperature");
         NyaLlmSerialization.ApplyModelOverrides(sampling, profile);
         return sampling;
     }
@@ -93,6 +116,7 @@ public static class NyaLlmAdminSettings
         return new
         {
             sampling,
+            extra_body = profile.ExtraBody,
             sampling_location = profile.Provider == "ollama" ? "options" : profile.Provider == "gemini" ? "generationConfig" : "body",
             thinking,
             max_context_tokens = profile.MaxContextTokens,

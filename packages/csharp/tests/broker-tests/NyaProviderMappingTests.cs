@@ -4,10 +4,6 @@ using Broker.NyaChat;
 
 namespace Broker.Tests;
 
-/// <summary>
-/// Doc 3 Plan B：原生 provider（Anthropic / Gemini）的 wire-format 純函式映射測試。
-/// 只測 BuildBody/ParseResponse 與共用 schema helper；HTTP 不在單測。
-/// </summary>
 public static class NyaProviderMappingTests
 {
     private static int _passed;
@@ -241,17 +237,17 @@ public static class NyaProviderMappingTests
     private static void TestResolveEndpointUsesStoredUrlVerbatim()
     {
         Console.WriteLine("--- ResolveEndpoint: 直接使用儲存的 API 位置，不附加子路徑、不改寫 path ---");
-        // 使用者儲存完整端點 → 原樣送出（不再被附加 v1/responses、v1beta/... 等）。
+
         AssertEqual("e-responses", "http://localhost:1234/v1/responses",
             NyaLlmSerialization.ResolveEndpoint("http://localhost:1234/v1/responses").AbsoluteUri);
         AssertEqual("e-chat", "http://localhost:1234/v1/chat/completions",
             NyaLlmSerialization.ResolveEndpoint("http://localhost:1234/v1/chat/completions").AbsoluteUri);
         AssertEqual("e-ollama", "http://localhost:11434/api/chat",
             NyaLlmSerialization.ResolveEndpoint("http://localhost:11434/api/chat").AbsoluteUri);
-        // 前後空白容錯（純解析，非 URL 改寫）。
+
         AssertEqual("e-trim", "http://localhost:1234/v1/chat/completions",
             NyaLlmSerialization.ResolveEndpoint("  http://localhost:1234/v1/chat/completions  ").AbsoluteUri);
-        // 空字串 → 明確拋例外（mis-config 守衛，不靜默打到錯地方）。
+
         var threw = false;
         try { NyaLlmSerialization.ResolveEndpoint(" "); } catch (ArgumentException) { threw = true; }
         AssertTrue("e-empty-throws", threw);
@@ -268,7 +264,6 @@ public static class NyaProviderMappingTests
         AssertEqual("required-first", "city", schema["required"]!.AsArray()[0]!.GetValue<string>());
     }
 
-    // ── assert helpers ──────────────────────────────────────────────────────────
     private static void AssertEqual<T>(string name, T expected, T actual)
     {
         if (Equals(expected, actual)) { Console.WriteLine($"  [PASS] {name}"); _passed++; }

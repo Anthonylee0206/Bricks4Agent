@@ -3,12 +3,6 @@ using Broker.Services.NyaTools;
 
 namespace Broker.Tests;
 
-/// <summary>
-/// search 工具契約回歸測試（#2）。
-/// 核心修復：mediator 在「零結果」時仍回 Success=true + 罐頭文字（「沒有找到任何可用結果…」），
-/// 舊版直接餵回 LLM 當成有效答案。新契約：失敗或零結果一律 Fail + 錯誤碼，讓 LLM 誠實回應。
-/// 驗證純函式 <see cref="SearchToolPlugin.Map"/>，與 mediator/DI 解耦。
-/// </summary>
 public static class NyaSearchToolTests
 {
     private static int _passed;
@@ -39,7 +33,7 @@ public static class NyaSearchToolTests
         var mapped = SearchToolPlugin.Map(result, personalizeOutput: true);
         AssertTrue("not-success", !mapped.Success);
         AssertTrue("carries-error-code", mapped.LlmContent.Contains("tool_spec_unavailable"));
-        AssertTrue("is-failure-json", mapped.LlmContent.Contains("\"success\":false"));
+        AssertTrue("is-failure-json", mapped.LlmContent.Contains("\"ok\":false"));
     }
 
     private static void TestEmptyResultsBecomeErrorNotCannedText()
@@ -54,7 +48,7 @@ public static class NyaSearchToolTests
         var mapped = SearchToolPlugin.Map(result, personalizeOutput: true);
         AssertTrue("empty-not-success", !mapped.Success);
         AssertTrue("empty-error-code", mapped.LlmContent.Contains("search_no_results"));
-        // 罐頭文字不得被當成有效 LLM 回覆內容餵回。
+
         AssertTrue("no-canned-text", !mapped.LlmContent.Contains("沒有找到任何可用結果"));
     }
 

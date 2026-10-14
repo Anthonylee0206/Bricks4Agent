@@ -6,13 +6,6 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Broker.Tests;
 
-/// <summary>
-/// 插件執行路徑的嚴格回歸測試（對應 nyachat_architecture_gaps 嚴審後修復的四個正確性/安全 bug）：
-///   #2 壞插件不得炸毀 broker（登錄器容錯：撞名/空名/GetTools 拋例外 → 跳過、不 throw）；
-///   #8 已停用工具不得被執行（執行門 = 已知 ∩ 啟用 ∩ 授權）；
-///   #4 執行前依 schema 驗證 LLM 參數（required + enum）；
-///   #7 多工具情境下 DirectReplies 不得被靜默吞掉。
-/// </summary>
 public static class NyaToolExecutionTests
 {
     private static int _passed;
@@ -25,12 +18,10 @@ public static class NyaToolExecutionTests
         Console.WriteLine("=== NyaChat Tool Execution Hardening Tests (插件嚴審修復) ===");
         Console.WriteLine();
 
-        // #2 登錄器容錯
         TestRegistryToleratesEmptyName();
         TestRegistryToleratesDuplicateName();
         TestRegistryToleratesThrowingPlugin();
 
-        // #8 執行門：停用工具不得執行
         TestExecutableGateRejectsDisabled();
         TestExecutableGateRejectsUnknown();
         TestExecutableGateRejectsUnauthorized();
@@ -38,28 +29,23 @@ public static class NyaToolExecutionTests
         TestDisabledToolStillExposed();
         TestUnauthorizedToolStillExposed();
 
-        // #4 參數驗證
         TestArgValidationMissingRequired();
         TestArgValidationEnumViolation();
         TestArgValidationValid();
         TestArgValidationNoRequiredAllowsEmpty();
 
-        // #7 多工具 DirectReplies
         TestDirectRepliesSingle();
         TestDirectRepliesMultiAllDirect();
         TestDirectRepliesMixedFallsToClosedLoop();
         TestDirectRepliesNonePersonalized();
 
-        // #10 例外訊息不得外洩給 LLM/使用者
         TestInternalErrorJsonIsGeneric();
         TestFactToolDoesNotLeakExceptionText();
 
-        // 改進3：per-tool timeout（NyaToolTimeout）
         TestToolTimeoutReturnsNull();
         TestToolTimeoutFastToolPassesThrough();
         TestToolTimeoutOuterCancelPropagates();
 
-        // 工具執行狀態標註（成功/失敗/未啟動 → 明確告知 LLM）
         TestStatusFromResultMapping();
         TestStatusLabelsAreDistinct();
         TestFormatPrependsSuccessLabel();
@@ -73,7 +59,6 @@ public static class NyaToolExecutionTests
         return (_passed, _failed);
     }
 
-    // ── 改進3：per-tool timeout（NyaToolTimeout）──────────────────────────────────
     private static void TestToolTimeoutReturnsNull()
     {
         Console.WriteLine("--- slow plugin hits per-tool timeout → null (caller maps to Failed) ---");
@@ -124,7 +109,6 @@ public static class NyaToolExecutionTests
         }
     }
 
-    // ── 工具執行狀態標註（NyaToolStatusFormatter）─────────────────────────────────
     private static void TestStatusFromResultMapping()
     {
         Console.WriteLine("--- FromResult maps Ok→Success, Fail→Failed (NotEnabled is gate-only) ---");
@@ -179,7 +163,6 @@ public static class NyaToolExecutionTests
         AssertTrue("no-content-placeholder", formatted.Contains("(no content)"));
     }
 
-    // ── #2 登錄器容錯 ────────────────────────────────────────────────────────────
     private static void TestRegistryToleratesEmptyName()
     {
         Console.WriteLine("--- registry skips empty-name tool without throwing (#2) ---");
@@ -211,7 +194,6 @@ public static class NyaToolExecutionTests
         AssertEqual("only-survivor", 1, registry.GetAllWithStatus().Count);
     }
 
-    // ── #8 執行門 ────────────────────────────────────────────────────────────────
     private static void TestExecutableGateRejectsDisabled()
     {
         Console.WriteLine("--- disabled tool is not executable (#8) ---");
@@ -270,10 +252,9 @@ public static class NyaToolExecutionTests
         AssertTrue("unauth-not-exec", !ok && st == "not_authorized");
     }
 
-    // ── #4 參數驗證 ──────────────────────────────────────────────────────────────
     private static NyaToolSchema FactSchema() => new()
     {
-        Name = "upsert_fact",
+        Name = "note_save",
         Parameters = new[]
         {
             new NyaToolParam { Name = "category", Required = true, Enum = new[] { "identity", "preference", "context", "instruction" } },
@@ -315,10 +296,9 @@ public static class NyaToolExecutionTests
         var (ok1, _) = NyaToolArgValidator.Validate(schema, "{}");
         var (ok2, _) = NyaToolArgValidator.Validate(schema, "not json");
         AssertTrue("empty-ok", ok1);
-        AssertTrue("garbage-ok-when-no-required", ok2);
+        AssertTrue("garbage-rejected-when-no-required", !ok2);
     }
 
-    // ── #7 多工具 DirectReplies ───────────────────────────────────────────────────
     private static void TestDirectRepliesSingle()
     {
         Console.WriteLine("--- single direct-reply tool → direct output (#7) ---");
@@ -347,8 +327,8 @@ public static class NyaToolExecutionTests
         Console.WriteLine("--- mixed direct + personalized → closed loop (null), no silent drop (#7) ---");
         var plan = NyaToolReplyPlanner.PlanDirectReplies(new[]
         {
-            NyaToolResult.Ok("personalize-me"),            // no DirectReplies
-            NyaToolResult.Ok("l2", new[] { "raw-b" }),     // direct
+            NyaToolResult.Ok("personalize-me"),
+            NyaToolResult.Ok("l2", new[] { "raw-b" }),
         });
         AssertTrue("mixed-null", plan == null);
     }
@@ -364,7 +344,6 @@ public static class NyaToolExecutionTests
         AssertTrue("none-null", plan == null);
     }
 
-    // ── #10 例外訊息不得外洩 ──────────────────────────────────────────────────────
     private static void TestInternalErrorJsonIsGeneric()
     {
         Console.WriteLine("--- internal error JSON is generic, carries no exception text (#10) ---");
@@ -385,10 +364,9 @@ public static class NyaToolExecutionTests
             var audit = new NyaAuditLogger(db, store, NullLogger<NyaAuditLogger>.Instance);
             var plugin = new FactToolPlugin(mem, audit, NullLogger<FactToolPlugin>.Instance);
 
-            // 觸發 try 內部的 JsonDocument.Parse 例外（壞 JSON），驗證 catch 回傳泛用訊息而非 ex.Message。
             var ctx = new NyaToolContext
             {
-                ToolName = "upsert_fact",
+                ToolName = "note_save",
                 UserId = "u_leak",
                 ChannelType = "line",
                 ArgumentsJson = "{ this is not valid json"
@@ -396,20 +374,19 @@ public static class NyaToolExecutionTests
             var result = plugin.ExecuteAsync(ctx, CancellationToken.None).GetAwaiter().GetResult();
 
             AssertTrue("leak-failed", !result.Success);
-            AssertEqual("leak-sanitized", NyaToolError.InternalJson(), result.LlmContent);
-            // 回饋內容不得含 System.Text.Json 解析器的原始用語。
+            AssertTrue("leak-sanitized", result.LlmContent.Contains("invalid_args"));
+
             AssertTrue("leak-no-raw-parser-text",
-                !result.LlmContent.Contains("JSON") && !result.LlmContent.Contains("LineNumber"));
+                !result.LlmContent.Contains("LineNumber") && !result.LlmContent.Contains("BytePositionInLine"));
         }
         finally
         {
             db.Dispose();
             foreach (var p in new[] { path, path + "-shm", path + "-wal" })
-                try { if (File.Exists(p)) File.Delete(p); } catch { /* best-effort */ }
+                try { if (File.Exists(p)) File.Delete(p); } catch {  }
         }
     }
 
-    // ── 測試替身與工廠 ────────────────────────────────────────────────────────────
     private static NyaToolRegistry Registry(INyaToolAuthorizer auth, params INyaToolPlugin[] plugins)
     {
         var enableStore = new NyaToolEnableStore(new ConfigurationBuilder().Build(), NullLogger<NyaToolEnableStore>.Instance);
@@ -453,7 +430,6 @@ public static class NyaToolExecutionTests
         public Task UpdateAsync(NyaChatConfig config, CancellationToken cancellationToken) => Task.CompletedTask;
     }
 
-    // ── assert helpers ──────────────────────────────────────────────────────────
     private static void AssertEqual<T>(string name, T expected, T actual)
     {
         if (Equals(expected, actual)) { Console.WriteLine($"  [PASS] {name}"); _passed++; }

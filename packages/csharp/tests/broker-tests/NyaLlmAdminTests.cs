@@ -5,7 +5,6 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Broker.Tests;
 
-/// <summary>Doc 3 Plan C：LLM 管理面（param catalog / 模板 / api_key 保護 / 遮罩）。</summary>
 public static class NyaLlmAdminTests
 {
     private static int _passed;
@@ -48,7 +47,7 @@ public static class NyaLlmAdminTests
     {
         Console.WriteLine("--- provider templates: four families map to provider + defaults ---");
         var t = NyaLlmProviderTemplates.All;
-        AssertEqual("template-count", 5, t.Count);
+        AssertEqual("template-count", 6, t.Count);
         var chatgpt = t.First(x => x.Id == "chatgpt");
         AssertEqual("chatgpt-provider", "openai_chat", chatgpt.Provider);
         AssertEqual("claude-provider", "anthropic", t.First(x => x.Id == "claude").Provider);
@@ -89,7 +88,7 @@ public static class NyaLlmAdminTests
             AssertEqual("effective-overrides-temperature", 0.2, sampling["temperature"]!.GetValue<double>());
             AssertEqual("effective-overrides-penalty", 1.5, sampling["presence_penalty"]!.GetValue<double>());
             AssertEqual("effective-freeform-param", 20d, sampling["top_k"]!.GetValue<double>());
-            AssertEqual("real-call-site-count", 4, NyaLlmAdminSettings.CallSites.Count);
+            AssertEqual("real-call-site-count", 3, NyaLlmAdminSettings.CallSites.Count);
             AssertTrue("no-tool-call-sites", NyaLlmAdminSettings.CallSites.All(s => !s.StartsWith("tool:")));
         }
         finally
@@ -122,26 +121,22 @@ public static class NyaLlmAdminTests
                 new NyaLlmProfile { Provider = "anthropic", Model = "m", ApiKey = "sk-plain" }));
             store.SetRoute(NyaLlmProfileStore.DefaultCallSite, "p1");
 
-            // 1) raw DB column is encrypted (not plaintext)
             var rawKey = db.Scalar<string>("SELECT api_key FROM nya_llm_profiles WHERE profile_id = 'p1'", null);
             AssertTrue("at-rest-encrypted", rawKey != null && rawKey != "sk-plain" && rawKey.Contains("sk-plain") == false || rawKey == "ENC(sk-plain)");
             AssertEqual("at-rest-exact", "ENC(sk-plain)", rawKey);
 
-            // 2) GetProfile returns plaintext (decrypted)
             AssertEqual("get-decrypted", "sk-plain", store.GetProfile("p1")!.ApiKey);
-            // 3) ResolveProfile returns plaintext (decrypted) for use by NyaLlmClient
+
             AssertEqual("resolve-decrypted", "sk-plain", store.ResolveProfile(NyaLlmProfileStore.DefaultCallSite).ApiKey);
         }
         finally
         {
             db.Dispose();
             foreach (var p in new[] { path, path + "-shm", path + "-wal" })
-                try { if (File.Exists(p)) File.Delete(p); } catch { /* best-effort */ }
+                try { if (File.Exists(p)) File.Delete(p); } catch {  }
         }
     }
 
-    // #4：用網頁改 LLM 設定後要有可在管理面板看到的稽核紀錄（全域 __sys__ 動作），
-    // 比照既有 tool_toggle / soul_change / config_update。之前 profile/route 異動完全靜默。
     private static void TestLlmChangesWriteWebVisibleAudit()
     {
         Console.WriteLine("--- audit: llm profile/route changes land in web-visible (__sys__) audit log ---");
@@ -155,7 +150,6 @@ public static class NyaLlmAdminTests
             audit.LogLlmRouteSet("chat", "chat_default");
             audit.LogLlmProfileDelete("stale_profile");
 
-            // 管理面板查全域日誌（userId=null）；這三筆都該帶 __sys__ user 與對應 action。
             var (logs, total) = audit.GetLogs(userId: null, limit: 50);
             AssertTrue("audit-has-three", total >= 3);
 
@@ -173,14 +167,13 @@ public static class NyaLlmAdminTests
             AssertTrue("delete-logged", del != null);
             AssertTrue("delete-detail-has-profile", del!.DetailJson.Contains("stale_profile"));
 
-            // 稽核不得記下 api_key（即使未來方法簽章變動，也不該洩漏祕密）。
             AssertTrue("no-secret-in-audit", !upsert.DetailJson.Contains("api_key"));
         }
         finally
         {
             db.Dispose();
             foreach (var p in new[] { path, path + "-shm", path + "-wal" })
-                try { if (File.Exists(p)) File.Delete(p); } catch { /* best-effort */ }
+                try { if (File.Exists(p)) File.Delete(p); } catch {  }
         }
     }
 

@@ -3,157 +3,139 @@ using Broker.NyaChat.Abstractions;
 
 namespace Broker.NyaChat;
 
-/// <summary>
-/// 內建的長期記憶事實工具插件：<c>upsert_fact</c> / <c>delete_fact</c>。
-/// </summary>
-/// <remarks>
-/// <para>
-/// 由 <c>NyaChatOrchestrator</c> 內聯的 <c>ExecuteFactTools</c> 原樣搬遷而來，行為等價：
-/// 解析參數 → <see cref="NyaMemoryService"/> 寫入/刪除 → 審計 → 回傳 <c>{"success":...}</c> JSON
-/// 作為 <see cref="NyaToolResult.LlmContent"/>，由 Orchestrator 統一閉環餵回 LLM 取得自然語言確認。
-/// </para>
-/// <para>
-/// 預設啟用（<see cref="NyaToolSchema.DefaultEnabled"/> = true）；D1 決議事實工具可由 admin 個別關閉，
-/// 故仍納入啟停管理（透過 <see cref="NyaToolEnableStore"/>）。<see cref="NyaToolSchema.RequiredPermission"/>
-/// 為 null（所有使用者可用）。
-/// </para>
-/// 插件相依由自身建構式 DI 取得（gaps 0.2），Nya 核心無須知道。
-/// </remarks>
 public sealed class FactToolPlugin : INyaToolPlugin
 {
-    private readonly NyaMemoryService _memoryService;
-    private readonly NyaAuditLogger _auditLogger;
-    private readonly ILogger<FactToolPlugin> _logger;
+    private readonly NyaMemoryService _memory;
+    private readonly NyaAuditLogger _audit;
 
-    public FactToolPlugin(
-        NyaMemoryService memoryService,
-        NyaAuditLogger auditLogger,
-        ILogger<FactToolPlugin> logger)
+    public FactToolPlugin(NyaMemoryService memoryService, NyaAuditLogger auditLogger, ILogger<FactToolPlugin> logger)
     {
-        _memoryService = memoryService;
-        _auditLogger = auditLogger;
-        _logger = logger;
+        _memory = memoryService;
+        _audit = auditLogger;
     }
+
+    internal static NyaToolParam Text(string name, bool required = false, int max = 512, string? pattern = null)
+        => new() { Name = name, Required = required, MinLength = 1, MaxLength = max, Pattern = pattern ?? @"\S", Format = name is "date" or "from_date" or "to_date" ? "date" : null };
+    internal static NyaToolParam Choice(string name, params string[] values)
+        => new() { Name = name, Enum = values };
+    internal static NyaToolParam Number(string name, int min, int max)
+        => new() { Name = name, Type = "integer", Minimum = min, Maximum = max };
+    internal static NyaToolParam Array(string name)
+        => new() { Name = name, Type = "array", MinItems = 1, MaxItems = 100, Items = Text("", true, 256) };
+    internal static NyaToolSchema Schema(string name, string description, params NyaToolParam[] parameters)
+        => new()
+        {
+            Name = name, Description = description, CapabilityStatement = description, Group = "memory", DefaultEnabled = true, Parameters = parameters,
+            AnyOfRequired = name switch
+            {
+                "note_save" => new[] { new[] { "key" }, new[] { "note_id" } },
+                "forget_find" => new[] { new[] { "terms" }, new[] { "note_ids" } },
+                "forget" => new[] { new[] { "selection_id" }, new[] { "note_ids" }, new[] { "message_ids" } },
+                _ => System.Array.Empty<string[]>()
+            },
+            ExcludedTogether = name switch
+            {
+                "note_save" => new[] { new[] { "key", "note_id" } },
+                "forget" => new[] { new[] { "selection_id", "note_ids" }, new[] { "selection_id", "message_ids" } },
+                _ => System.Array.Empty<string[]>()
+            },
+            RequiredWhen = System.Array.Empty<NyaToolCondition>()
+        };
+    internal static string? Str(JsonElement args, string name)
+        => args.TryGetProperty(name, out var value) ? value.GetString() : null;
+    internal static string[] Strings(JsonElement args, string name)
+        => args.TryGetProperty(name, out var value) ? value.EnumerateArray().Select(x => x.GetString()!).ToArray() : [];
+    internal static int Int(JsonElement args, string name, int fallback)
+        => args.TryGetProperty(name, out var value) ? decimal.ToInt32(value.GetDecimal()) : fallback;
 
     public IReadOnlyList<NyaToolSchema> GetTools() => new[]
     {
-        new NyaToolSchema
-        {
-            Name        = "upsert_fact",
-            Description = "把使用者明確說出、之後仍會用到的事記成筆記（新增或更新）：稱呼與身分、長期偏好、明確要你記住的事、有期限的近況。一次性的查詢、問題、玩笑、情緒不要推論成偏好。同一件事改變時用同一個 key 更新。",
-            Group       = "memory",
-            DefaultEnabled = true,
-            CapabilityStatement = "我可以把你明確告訴我的事記下來，之後也能更正。",
-            Parameters = new[]
-            {
-                new NyaToolParam { Name = "category", Required = true,
-                    Description = "分類：identity（身份）、preference（偏好）、context（任務/情況）、instruction（使用者指令）",
-                    Enum = new[] { "identity", "preference", "context", "instruction" } },
-                new NyaToolParam { Name = "key", Required = true,
-                    Description = "事實的唯一鍵名（英文，底線分隔，例如 user_name、prefers_spicy）" },
-                new NyaToolParam { Name = "value", Required = true,
-                    Description = "筆記內容（簡短、具體，不加推論）" },
-                new NyaToolParam { Name = "source_text", Required = false,
-                    Description = "使用者的原話（記下這則筆記的依據）" },
-                new NyaToolParam { Name = "expires_in_days", Required = false, Type = "integer",
-                    Description = "幾天後失效（整數）；只用於有期限的近況，例如明天的面試。長期資訊不要填；更新時不填表示沿用原本期限，填 0 表示改為長期有效" },
-            }
-        },
-        new NyaToolSchema
-        {
-            Name        = "delete_fact",
-            Description = "遺忘一則筆記：使用者要你忘記、說記錯了、或資訊已不再成立時使用。遺忘後不會再被提起，除非使用者重新告訴你。",
-            Group       = "memory",
-            DefaultEnabled = true,
-            CapabilityStatement = "你要我忘掉的事，我會真的忘掉。",
-            Parameters = new[]
-            {
-                new NyaToolParam { Name = "key", Required = true, Description = "要遺忘的筆記 key" },
-            }
-        }
+        Schema("note_save", "新增用 key，更正用穩定 note_id；key 衝突不覆寫。只記使用者明確告知的資訊。期限只有 expiry 物件：mode keep 沿用、never 長期、on_date 搭配 date 台灣日期含當日。容量滿請先整理。",
+            Text("key", max: 128), Text("note_id", max: 128), Text("content", true, 100000),
+            new NyaToolParam { Name = "expiry", Type = "object", Properties = new[] {
+                new NyaToolParam { Name = "mode", Required = true, Enum = new[] { "keep", "never", "on_date" } },
+                Text("date", max: 10, pattern: @"^\d{4}-\d{2}-\d{2}$") }, RequiredWhen = new[] { new NyaToolCondition("mode", "on_date", "date") } }, Array("source_message_ids")),
+        Schema("note_list", "完整分頁查詢筆記全文、過期筆記與所有舊版本；scope current 只限目前聊天室，all 為目前會話範圍。",
+            Choice("scope", "all", "current"), Text("note_id", max: 128), Number("limit", 1, 100), Text("cursor", max: 128)),
+        Schema("forget_find", "先看固定候選與筆記來源訊息，再決定忘記。terms 或 note_ids 至少一組。遺忘只隱藏指定資料；有歧義先問使用者，不能替使用者自填確認。",
+            Array("terms"), Array("note_ids"), Choice("scope", "all", "current"), Choice("match", "any", "all")),
+        Schema("forget", "在交易內隱藏明確候選、筆記與訊息及其回覆、相關工作紀錄；只回數量和 ID。大範圍先 forget_find。重新告知自然可見，重新保存 key 不解除舊隱藏。",
+            Text("selection_id", max: 128), Array("note_ids"), Array("message_ids"))
     };
 
     public Task<NyaToolResult> ExecuteAsync(NyaToolContext context, CancellationToken cancellationToken)
     {
-        var userId = context.UserId;
-        var shortUser = userId[..Math.Min(8, userId.Length)];
-
         try
         {
+            var schema = GetTools().First(s => s.Name == context.ToolName);
+            var validation = NyaToolArgValidator.ValidateError(schema, context.ArgumentsJson);
+            if (validation != null) return Task.FromResult(NyaToolResult.Error("invalid_args", validation.Field, validation.Message));
             using var doc = JsonDocument.Parse(context.ArgumentsJson);
             var args = doc.RootElement;
-
+            NyaToolResult result;
             switch (context.ToolName)
             {
-                case "upsert_fact":
+                case "note_save":
                 {
-                    var category = args.TryGetProperty("category", out var c) ? c.GetString() ?? "instruction" : "instruction";
-                    var key      = args.TryGetProperty("key",      out var k) ? k.GetString() ?? "" : "";
-                    var value    = args.TryGetProperty("value",    out var v) ? v.GetString() ?? "" : "";
-                    var existing = _memoryService.GetFactHistory(userId, key).FirstOrDefault(x => x.IsActive);
-                    var source   = args.TryGetProperty("source_text", out var st) && st.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(st.GetString())
-                        ? st.GetString()
-                        : existing?.SourceText;
-                    var expiresAt = existing?.ExpiresAt;
-                    if (args.TryGetProperty("expires_in_days", out var ed) && ed.ValueKind != JsonValueKind.Null)
-                    {
-                        int? days = ed.ValueKind == JsonValueKind.Number && ed.TryGetInt32(out var n) ? n
-                                  : ed.ValueKind == JsonValueKind.String && int.TryParse(ed.GetString(), out var m) ? m : null;
-                        if (days is null || days < 0)
-                        {
-                            _auditLogger.LogToolResult(userId, context.ToolName, "invalid expires_in_days", "skipped");
-                            return Task.FromResult(NyaToolResult.Fail(
-                                "{\"success\":false,\"error\":\"invalid_expires_in_days\",\"message\":\"expires_in_days 必須是 0 以上的整數；0 表示改為長期有效\"}"));
-                        }
-                        expiresAt = days == 0 ? null : DateTime.UtcNow.AddDays(Math.Min(days.Value, 3650));
-                    }
-
-                    if (string.IsNullOrWhiteSpace(key) || string.IsNullOrWhiteSpace(value))
-                    {
-                        _auditLogger.LogToolResult(userId, context.ToolName, "skipped: empty key or value", "skipped");
-                        return Task.FromResult(NyaToolResult.Fail("{\"success\":false,\"error\":\"empty key or value\"}"));
-                    }
-
-                    var fact = _memoryService.UpsertFact(userId, category, key, value, null, 1.0f, source, expiresAt);
-                    _auditLogger.LogFactUpsert(userId, key, category, fact.Version);
-                    _auditLogger.LogToolResult(userId, context.ToolName, $"upserted {category}/{key} → v{fact.Version}");
-                    _logger.LogInformation("[NyaChat/FactTool] upsert_fact key={Key} user={User}", key, shortUser);
-
-                    return Task.FromResult(NyaToolResult.Ok(
-                        $"{{\"success\":true,\"category\":\"{category}\",\"key\":\"{key}\",\"version\":{fact.Version}}}"));
+                    var noteId = Str(args, "note_id");
+                    if (noteId != null && Str(args, "key") != null) throw new NyaMemoryException("exclusive", "key", "更正只用 note_id；新增只用 key。");
+                    var sources = Strings(args, "source_message_ids");
+                    if (sources.Length == 0 && context.TraceId.Length > 0)
+                        sources = _memory.VisibleMessages(context).Where(m => m.TurnId == context.TraceId && m.Role == "user").Select(m => m.MessageId).ToArray();
+                    var expiry = args.TryGetProperty("expiry", out var expiryObject) ? Str(expiryObject, "mode")! : "keep";
+                    var date = expiryObject.ValueKind == JsonValueKind.Object ? Str(expiryObject, "date") : null;
+                    var note = _memory.SaveNote(context, noteId, Str(args, "key"), Str(args, "content")!, expiry, date, sources);
+                    result = NyaToolResult.Envelope(new { note_id = note.NoteId, key = note.Key, version = note.Version, expires_at = note.ExpiresAt, source_message_ids = sources },
+                        effects: new object[] { new { action = "note_save", note_id = note.NoteId, version = note.Version } });
+                    break;
                 }
-
-                case "delete_fact":
+                case "note_list":
                 {
-                    var key = args.TryGetProperty("key", out var k) ? k.GetString() ?? "" : "";
-                    if (string.IsNullOrWhiteSpace(key))
+                    var scope = Str(args, "scope") ?? "all";
+                    var noteId = Str(args, "note_id");
+                    var notes = _memory.ListNotes(context.UserId, context.Scope, context.ExternalConversationId, false)
+                        .Where(n => noteId == null || n.NoteId == noteId)
+                        .Where(n => scope != "current" || n.TopicId == context.ConversationId).ToList();
+                    result = _memory.PageMemory(context, JsonSerializer.Serialize(new { tool = "note_list", scope, noteId, topic = scope == "current" ? context.ConversationId : null }), Str(args, "cursor"), notes.Select(n => n.VersionId).ToArray(), Int(args, "limit", 20), id =>
                     {
-                        _auditLogger.LogToolResult(userId, context.ToolName, "skipped: empty key", "skipped");
-                        return Task.FromResult(NyaToolResult.Fail("{\"success\":false,\"error\":\"empty key\"}"));
-                    }
-
-                    if (!_memoryService.ForgetFact(userId, key))
-                    {
-                        _auditLogger.LogToolResult(userId, context.ToolName, $"no note key={key}", "skipped");
-                        return Task.FromResult(NyaToolResult.Fail($"{{\"success\":false,\"error\":\"note_not_found\",\"key\":\"{key}\"}}"));
-                    }
-                    _auditLogger.LogMemoryDelete(userId, "fact_key", key);
-                    _auditLogger.LogToolResult(userId, context.ToolName, $"forgot fact key={key}");
-                    _logger.LogInformation("[NyaChat/FactTool] delete_fact key={Key} user={User}", key, shortUser);
-
-                    return Task.FromResult(NyaToolResult.Ok($"{{\"success\":true,\"key\":\"{key}\",\"forgotten\":true}}"));
+                        var note = notes.FirstOrDefault(n => n.VersionId == id);
+                        return note == null ? null : new { note_id = note.NoteId, version_id = note.VersionId, key = note.Key, content = note.Content,
+                            version = note.Version, is_current = note.IsCurrent, expired = note.ExpiresAt <= DateTime.UtcNow, expires_at = note.ExpiresAt,
+                            source_message_ids = StringsFromJson(note.SourceMessageIdsJson), topic_id = note.TopicId, created_at = note.CreatedAt };
+                    });
+                    break;
                 }
-
+                case "forget_find":
+                    if (Strings(args, "terms").Length + Strings(args, "note_ids").Length == 0) throw new NyaMemoryException("required", "terms", "提供 terms 或 note_ids。");
+                    result = _memory.FindForget(context, Strings(args, "terms"), Strings(args, "note_ids"), Str(args, "match") ?? "any", Str(args, "scope") == "current");
+                    break;
+                case "forget":
+                    if ((Str(args, "selection_id") == null ? 0 : 1) + (Strings(args, "note_ids").Length > 0 ? 1 : 0) + (Strings(args, "message_ids").Length > 0 ? 1 : 0) == 0)
+                        throw new NyaMemoryException("required", "selection_id", "提供 selection_id、note_ids 或 message_ids。");
+                    if (Str(args, "selection_id") != null && Strings(args, "note_ids").Length + Strings(args, "message_ids").Length > 0)
+                        throw new NyaMemoryException("exclusive", "selection_id", "selection_id 不可與其他 ID 混用。");
+                    result = _memory.Forget(context, Str(args, "selection_id"), Strings(args, "note_ids"), Strings(args, "message_ids"));
+                    break;
                 default:
-                    return Task.FromResult(NyaToolResult.Fail("{\"success\":false,\"error\":\"unknown tool\"}"));
+                    result = NyaToolResult.Error("unknown_tool", "tool", "未知工具。");
+                    break;
             }
+            _audit.LogMemoryTool(context.UserId, context.ToolName, context.ArgumentsJson, result.LlmContent, context.TraceId);
+            return Task.FromResult(result);
         }
-        catch (Exception ex)
+        catch (NyaMemoryException ex)
         {
-            // Bug #10：例外細節只進 server 端審計/log;回饋 LLM 的一律泛用訊息(不外洩內部錯誤)。
-            _auditLogger.LogToolResult(userId, context.ToolName, ex.Message, "error");
-            _logger.LogWarning(ex, "[NyaChat/FactTool] Failed to execute {Tool}", context.ToolName);
-            return Task.FromResult(NyaToolResult.Fail(NyaToolError.InternalJson()));
+            return Task.FromResult(NyaToolResult.Error(ex.Code, ex.Field, ex.Message));
+        }
+        catch (JsonException)
+        {
+            return Task.FromResult(NyaToolResult.Error("invalid_args", "arguments", "預期 JSON object。"));
+        }
+        catch (Exception)
+        {
+            return Task.FromResult(NyaToolResult.Error("internal_error", "tool", "工具執行失敗，請稍後再試。"));
         }
     }
+
+    private static string[] StringsFromJson(string json) => JsonSerializer.Deserialize<string[]>(json) ?? [];
 }

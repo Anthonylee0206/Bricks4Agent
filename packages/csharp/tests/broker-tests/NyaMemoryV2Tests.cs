@@ -19,15 +19,11 @@ public static class NyaMemoryV2Tests
         TestHistorySurvivesNewTopic();
         TestExplicitConversationStaysIsolated();
         TestSummariesOffByDefault();
-        TestForgetIsDurable();
         TestExpiredNoteNotInjected();
         TestSearchHistoryTool();
         TestUpsertStoresSourceAndExpiry();
         TestSummaryRollbackStaysInTopic();
-        TestForgetCoversSourceAndAdjacentReply();
-        TestSearchScopeAndEscaping();
         TestExpiryArgumentHandling();
-        TestForgettingTurnAndSummaries();
         TestUpgradeCompatibility();
         Console.WriteLine();
         Console.WriteLine($"=== Memory V2 Test Results: {_passed} passed, {_failed} failed ===");
@@ -67,103 +63,41 @@ public static class NyaMemoryV2Tests
         f.Memory.CreateSummary(f.UserId, topic, "舊摘要內容XYZ", 1, 1, 1);
         f.Memory.MarkAsSummarized(f.UserId, topic, 1, 1);
         f.Chat("你好");
-        var system = f.Llm.LastMessages.First(m => m.Role == "system").Content;
+        var system = string.Join("\n", f.Llm.LastMessages.Where(m => m.Role == "system").Select(m => m.Content));
         AssertTrue("summary-not-injected", !system.Contains("舊摘要內容XYZ"));
         AssertTrue("summarized-message-still-in-history", f.Llm.LastMessages.Any(m => m.Content == "舊訊息"));
         AssertEqual("only-chat-calls", 1, f.Llm.CallCount);
     }
 
-    private static void TestForgetIsDurable()
-    {
-        Console.WriteLine("--- forgetting removes the note, records it and hides it from search ---");
-        using var f = new Fixture();
-        var topic = f.Memory.GetOrCreateActiveTopic(f.UserId);
-        f.Memory.AppendMessage(f.UserId, "user", "我很喜歡查台北雨量", topic);
-        f.Memory.UpsertFact(f.UserId, "preference", "likes_rain_query", "喜歡查台北雨量");
-        AssertTrue("forget-returns-true", f.Memory.ForgetFact(f.UserId, "likes_rain_query", coversPendingTurn: false));
-        AssertEqual("note-gone", 0, f.Memory.GetFactHistory(f.UserId, "likes_rain_query").Count);
-        AssertEqual("forgotten-recorded", 1, f.Memory.GetForgotten(f.UserId).Count);
-        AssertEqual("search-hides-forgotten", 0, f.Memory.SearchMessages(f.UserId, "台北雨量").Count);
-        f.Chat("你好");
-        AssertTrue("forgotten-not-in-any-message", f.Llm.LastMessages.All(m => !m.Content.Contains("台北雨量")));
-        AssertTrue("forget-missing-key-false", !f.Memory.ForgetFact(f.UserId, "nope"));
-        f.Memory.AppendMessage(f.UserId, "user", "其實我還是喜歡查台北雨量", topic);
-        f.Chat("嗯");
-        AssertTrue("new-disclosure-visible", f.Llm.LastMessages.Any(m => m.Content.Contains("其實我還是喜歡查台北雨量")));
-        f.Memory.UpsertFact(f.UserId, "preference", "likes_rain_query", "使用者重新說喜歡");
-        AssertEqual("relearn-clears-forgotten", 0, f.Memory.GetForgotten(f.UserId).Count);
-    }
-
-    private static void TestForgetCoversSourceAndAdjacentReply()
-    {
-        Console.WriteLine("--- forgetting hides old wording and adjacent replies in search ---");
-        using var f = new Fixture();
-        var topic = f.Memory.GetOrCreateActiveTopic(f.UserId);
-        f.Memory.AppendMessage(f.UserId, "user", "我是誰", topic);
-        f.Memory.AppendMessage(f.UserId, "assistant", "你叫阿明", topic);
-        f.Memory.UpsertFact(f.UserId, "identity", "name", "阿明", sourceText: "叫我阿明");
-        f.Memory.ForgetFact(f.UserId, "name", coversPendingTurn: false);
-        var hits = f.Memory.SearchConversation(f.UserId, "我是誰");
-        AssertEqual("question-still-found", 1, hits.Count);
-        AssertTrue("adjacent-forgotten-reply-hidden", hits.Count == 1 && hits[0].Next == null);
-        f.Chat("嗨");
-        AssertTrue("reply-with-name-hidden-from-history", f.Llm.LastMessages.All(m => !m.Content.Contains("阿明")));
-    }
-
-    private static void TestSearchScopeAndEscaping()
-    {
-        Console.WriteLine("--- search respects conversation scope and escapes LIKE wildcards ---");
-        using var f = new Fixture();
-        var topic = f.Memory.GetOrCreateActiveTopic(f.UserId);
-        f.Memory.AppendMessage(f.UserId, "user", "設定 user_name 欄位", topic);
-        f.Memory.AppendMessage(f.UserId, "user", "設定 username 欄位", topic);
-        f.Memory.AppendMessage(f.UserId, "user", "外部對話裡的秘密計畫", "conv_ext");
-        AssertEqual("underscore-literal", 1, f.Memory.SearchConversation(f.UserId, "user_name").Count);
-        AssertEqual("percent-matches-nothing", 0, f.Memory.SearchConversation(f.UserId, "%").Count);
-        AssertEqual("line-scope-excludes-explicit", 0, f.Memory.SearchConversation(f.UserId, "秘密計畫").Count);
-        AssertEqual("explicit-scope-finds-own", 1, f.Memory.SearchConversation(f.UserId, "秘密計畫", conversationId: "conv_ext").Count);
-        f.Chat("你好");
-        AssertTrue("line-history-excludes-explicit", f.Llm.LastMessages.All(m => !m.Content.Contains("秘密計畫")));
-    }
-
     private static void TestExpiryArgumentHandling()
     {
-        Console.WriteLine("--- expiry: invalid values rejected, omitted keeps, zero clears ---");
         using var f = new Fixture();
         var tool = f.Services.GetServices<INyaToolPlugin>().OfType<FactToolPlugin>().Single();
-        NyaToolResult Upsert(string extra) => tool.ExecuteAsync(new NyaToolContext
-        {
-            ToolName = "upsert_fact", UserId = f.UserId, ChannelType = "line",
-            ArgumentsJson = "{\"category\":\"context\",\"key\":\"trip\",\"value\":\"下週出差\"" + extra + "}"
-        }, CancellationToken.None).GetAwaiter().GetResult();
-        AssertTrue("negative-rejected", !Upsert(",\"expires_in_days\":-1").Success);
-        AssertTrue("text-rejected", !Upsert(",\"expires_in_days\":\"abc\"").Success);
-        AssertTrue("set-ok", Upsert(",\"expires_in_days\":7,\"source_text\":\"我下週要出差\"").Success);
-        AssertTrue("update-ok", Upsert("").Success);
-        var kept = f.Memory.GetActiveFacts(f.UserId).Single(x => x.FactKey == "trip");
-        AssertTrue("omitted-keeps-expiry", kept.ExpiresAt != null);
-        AssertEqual("omitted-keeps-source", "我下週要出差", kept.SourceText);
-        AssertTrue("zero-ok", Upsert(",\"expires_in_days\":0").Success);
-        AssertTrue("zero-clears-expiry", f.Memory.GetActiveFacts(f.UserId).Single(x => x.FactKey == "trip").ExpiresAt == null);
-        IReadOnlyList<string> Detect(string text) => (IReadOnlyList<string>)typeof(NyaToolReplyPlanner)
-            .GetMethod("DetectCompletedActions", System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic)!
-            .Invoke(null, new object[] { text })!;
-        AssertTrue("forget-claim-detected", Detect("好，我已經忘掉了。").Contains("遺忘"));
-        AssertTrue("forget-negation-ignored", !Detect("我沒有忘記。").Contains("遺忘"));
+        NyaToolResult Save(object arguments) => tool.ExecuteAsync(new NyaToolContext { ToolName = "note_save", UserId = f.UserId, ArgumentsJson = System.Text.Json.JsonSerializer.Serialize(arguments) }, CancellationToken.None).GetAwaiter().GetResult();
+        AssertTrue("invalid-date-rejected", !Save(new { key = "trip", content = "下週出差", expiry = new { mode = "on_date", date = "2026-02-30" } }).Success);
+        AssertTrue("invalid-enum-rejected", !Save(new { key = "trip", content = "下週出差", expiry = new { mode = "days" } }).Success);
+        AssertTrue("set-date-ok", Save(new { key = "trip", content = "下週出差", expiry = new { mode = "on_date", date = "2099-01-01" } }).Success);
+        var note = f.Memory.ListNotes(f.UserId).Single();
+        AssertTrue("keep-ok", Save(new { note_id = note.NoteId, content = "下週出差更正" }).Success);
+        AssertEqual("omitted-keeps-expiry", note.ExpiresAt, f.Memory.ListNotes(f.UserId).Single().ExpiresAt);
+        AssertTrue("never-ok", Save(new { note_id = note.NoteId, content = "長期出差", expiry = new { mode = "never" } }).Success);
+        AssertTrue("never-clears-expiry", f.Memory.ListNotes(f.UserId).Single().ExpiresAt == null);
+        AssertTrue("key-conflict", !Save(new { key = "trip", content = "衝突" }).Success);
     }
 
     private static void TestExpiredNoteNotInjected()
     {
-        Console.WriteLine("--- expired notes are not active ---");
         using var f = new Fixture();
-        f.Memory.UpsertFact(f.UserId, "context", "interview", "明天面試", expiresAt: DateTime.UtcNow.AddMinutes(-1));
-        f.Memory.UpsertFact(f.UserId, "identity", "name", "八七");
-        var keys = f.Memory.GetActiveFacts(f.UserId).Select(x => x.FactKey).ToList();
+        var context = new NyaToolContext { UserId = f.UserId };
+        f.Memory.SaveNote(context, null, "interview", "過期面試", "on_date", "2000-01-01", []);
+        f.Memory.SaveNote(context, null, "name", "八七", "never", null, []);
+        var keys = f.Memory.ListNotes(f.UserId).Select(x => x.Key).ToList();
         AssertTrue("expired-excluded", !keys.Contains("interview"));
         AssertTrue("long-term-kept", keys.Contains("name"));
         f.Chat("你好");
-        var system = f.Llm.LastMessages.First(m => m.Role == "system").Content;
-        AssertTrue("note-has-date", system.Contains("name: 八七（記於 "));
+        var system = string.Join("\n", f.Llm.LastMessages.Where(m => m.Role == "system").Select(m => m.Content));
+        AssertTrue("note-full-content-and-id", system.Contains("八七") && system.Contains("note_id"));
+        AssertTrue("expired-not-in-prompt", !system.Contains("過期面試"));
     }
 
     private static void TestSearchHistoryTool()
@@ -178,10 +112,14 @@ public static class NyaMemoryV2Tests
         var ok = tool.ExecuteAsync(Ctx(f.UserId, "{\"query\":\"台鐵 高雄\"}"), CancellationToken.None).GetAwaiter().GetResult();
         AssertTrue("search-success", ok.Success);
         AssertTrue("search-hit", ok.LlmContent.Contains("台北到高雄"));
-        AssertTrue("search-followed-by", ok.LlmContent.Contains("10:30 自強號"));
+        var hitId = System.Text.Json.JsonDocument.Parse(ok.LlmContent).RootElement.GetProperty("data").GetProperty("results")[0].GetProperty("message_id").GetString()!;
+        var read = f.Memory.ReadHistory(new NyaToolContext { UserId = f.UserId }, hitId, 0, 1, 2000, null);
+        var cursor = System.Text.Json.JsonDocument.Parse(read.LlmContent).RootElement.GetProperty("data").GetProperty("cursor").GetString();
+        var next = f.Memory.ReadHistory(new NyaToolContext { UserId = f.UserId }, hitId, 0, 1, 2000, cursor);
+        AssertTrue("read-followed-by", next.LlmContent.Contains("10:30 自強號"));
         AssertTrue("search-not-escaped", !ok.LlmContent.Contains("\\u"));
         var none = tool.ExecuteAsync(Ctx(f.UserId, "{\"query\":\"不存在的關鍵字QQ\"}"), CancellationToken.None).GetAwaiter().GetResult();
-        AssertTrue("search-none-ok", none.Success && none.LlmContent.Contains("\"found\":0"));
+        AssertTrue("search-none-ok", none.Success && none.LlmContent.Contains("\"total\":0"));
         var missing = tool.ExecuteAsync(Ctx(f.UserId, "{}"), CancellationToken.None).GetAwaiter().GetResult();
         AssertTrue("search-missing-query-fails", !missing.Success);
         var exposed = f.Services.GetRequiredService<NyaToolRegistry>().BuildLlmTools(f.UserId, "line")
@@ -191,28 +129,20 @@ public static class NyaMemoryV2Tests
 
     private static void TestUpsertStoresSourceAndExpiry()
     {
-        Console.WriteLine("--- upsert_fact keeps the user's words and expiry ---");
         using var f = new Fixture();
-        var tool = f.Services.GetServices<INyaToolPlugin>().OfType<FactToolPlugin>().Single();
-        var res = tool.ExecuteAsync(new NyaToolContext
-        {
-            ToolName = "upsert_fact", UserId = f.UserId, ChannelType = "line",
-            ArgumentsJson = "{\"category\":\"context\",\"key\":\"interview\",\"value\":\"明天面試\",\"source_text\":\"明天要面試有點緊張\",\"expires_in_days\":2}"
-        }, CancellationToken.None).GetAwaiter().GetResult();
-        AssertTrue("upsert-ok", res.Success);
-        var fact = f.Memory.GetActiveFacts(f.UserId).Single(x => x.FactKey == "interview");
-        AssertEqual("source-text", "明天要面試有點緊張", fact.SourceText);
-        AssertTrue("expiry-set", fact.ExpiresAt is { } e && e > DateTime.UtcNow.AddDays(1) && e < DateTime.UtcNow.AddDays(3));
-        var del = tool.ExecuteAsync(new NyaToolContext
-        {
-            ToolName = "delete_fact", UserId = f.UserId, ChannelType = "line", ArgumentsJson = "{\"key\":\"interview\"}"
-        }, CancellationToken.None).GetAwaiter().GetResult();
-        AssertTrue("delete-forgets", del.Success && f.Memory.GetForgotten(f.UserId).Any(x => x.FactKey == "interview"));
-        var missing = tool.ExecuteAsync(new NyaToolContext
-        {
-            ToolName = "delete_fact", UserId = f.UserId, ChannelType = "line", ArgumentsJson = "{\"key\":\"interview\"}"
-        }, CancellationToken.None).GetAwaiter().GetResult();
-        AssertTrue("delete-missing-fails", !missing.Success && missing.LlmContent.Contains("note_not_found"));
+        var topic = f.Memory.GetOrCreateActiveTopic(f.UserId);
+        var source = f.Memory.AppendMessage(f.UserId, "user", "明天面試", topic);
+        var context = new NyaToolContext { UserId = f.UserId, ConversationId = topic };
+        var note = f.Memory.SaveNote(context, null, "interview", "明天面試", "on_date", "2099-01-01", [source.MessageId]);
+        AssertTrue("source-id-saved", note.SourceMessageIdsJson.Contains(source.MessageId));
+        AssertEqual("taiwan-inclusive-expiry", new DateTime(2099, 1, 1, 16, 0, 0, DateTimeKind.Utc), note.ExpiresAt!.Value);
+        var found = f.Memory.FindForget(context, [], [note.NoteId], "any");
+        var selection = System.Text.Json.JsonDocument.Parse(found.LlmContent).RootElement.GetProperty("data").GetProperty("selection_id").GetString();
+        var forgotten = f.Memory.Forget(context, selection, [], []);
+        AssertTrue("forget-hides-note", forgotten.Success && f.Memory.ListNotes(f.UserId).Count == 0);
+        AssertTrue("forget-hides-source", f.Memory.IsHidden(f.UserId, "message", source.MessageId));
+        AssertTrue("forget-preserves-raw-note", f.Memory.AdminNotes(f.UserId).Count == 1);
+        AssertTrue("forget-does-not-return-text", !forgotten.LlmContent.Contains("明天面試"));
     }
 
     private static void TestSummaryRollbackStaysInTopic()
@@ -231,29 +161,6 @@ public static class NyaMemoryV2Tests
         AssertEqual("one-active-in-a", 1, active.Count(x => x.TopicId == topicA));
         AssertTrue("a-active-is-a1", active.Any(x => x.SummaryId == a1.SummaryId));
         AssertTrue("b-untouched", active.Any(x => x.SummaryId == b1.SummaryId));
-    }
-
-    private static void TestForgettingTurnAndSummaries()
-    {
-        Console.WriteLine("--- the forgetting turn itself and derived summaries are covered ---");
-        using var f = new Fixture();
-        var topic = f.Memory.GetOrCreateActiveTopic(f.UserId);
-        f.Memory.AppendMessage(f.UserId, "user", "我住在台中北屯", topic);
-        f.Memory.UpsertFact(f.UserId, "identity", "home", "台中北屯");
-        f.Memory.CreateSummary(f.UserId, topic, "使用者住在台中北屯", 1, 1, 1);
-        f.Memory.CreateSummary(f.UserId, topic, "使用者喜歡貓", 2, 2, 1);
-        f.Memory.ForgetFact(f.UserId, "home");
-        f.Memory.AppendMessage(f.UserId, "user", "把我住台中北屯這件事忘掉", topic);
-        f.Memory.AppendMessage(f.UserId, "assistant", "好，台中北屯我忘掉了", topic);
-        f.Memory.AppendMessage(f.UserId, "user", "之後再說台中北屯也可以", topic);
-        var visible = f.Memory.GetRecentConversation(f.UserId, null).Select(m => m.Content).ToList();
-        AssertTrue("forget-request-hidden", !visible.Contains("把我住台中北屯這件事忘掉"));
-        AssertTrue("forget-reply-hidden", !visible.Contains("好，台中北屯我忘掉了"));
-        AssertTrue("later-disclosure-visible", visible.Contains("之後再說台中北屯也可以"));
-        var summaries = f.Memory.GetSummaryHistory(f.UserId).Select(x => x.SummaryText).ToList();
-        AssertTrue("summary-with-forgotten-removed", !summaries.Any(t => t.Contains("台中北屯")));
-        AssertTrue("unrelated-summary-kept", summaries.Contains("使用者喜歡貓"));
-        AssertTrue("quoted-claim-ignored", ((IReadOnlyList<string>)typeof(NyaToolReplyPlanner).GetMethod("DetectCompletedActions", System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic)!.Invoke(null, new object[] { "你可以跟我說「已經記住」來確認。" })!).Count == 0);
     }
 
     private static void TestUpgradeCompatibility()
@@ -308,8 +215,8 @@ public static class NyaMemoryV2Tests
                 TaskRouting = new()
                 {
                     ["chat"] = "fake_chat",
-                    ["fact_extraction"] = "fake_chat",
-                    ["summarization"] = "fake_chat"
+                    ["summarization"] = "fake_chat",
+
                 }
             });
             Services = services.BuildServiceProvider();

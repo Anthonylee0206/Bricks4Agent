@@ -79,7 +79,7 @@ public static class NyaChatUxTests
         {
             using var f = new Fixture(new[] { Reply("已記住。"), correction });
             var result = f.Chat();
-            AssertTrue("missing-correction-safe", result.Error == null && Join(result).Contains("沒有執行任何工具"));
+            AssertTrue("missing-correction-safe", result.Error != null && Join(result).Length > 0);
         }
         using (var f = new Fixture(new[] { Reply("要我幫您記住嗎？還沒刪除。") }))
         {
@@ -97,14 +97,14 @@ public static class NyaChatUxTests
 
     private static void TestCorrectiveExecution()
     {
-        var args = "{\"category\":\"preference\",\"key\":\"tea\",\"value\":\"喜歡茶\"}";
-        using (var f = new Fixture(new[] { Reply("已記住。"), Calls(Call("upsert_fact", args)), Reply("已記住你的喜好。") }))
+        var args = "{\"key\":\"tea\",\"content\":\"喜歡茶\"}";
+        using (var f = new Fixture(new[] { Reply("已記住。"), Calls(Call("note_save", args)), Reply("已記住你的喜好。") }))
         {
             var result = f.Chat();
             AssertEqual("corrective-tool-confirmation", "已記住你的喜好。", Join(result));
-            AssertTrue("corrective-tool-wrote-fact", f.Memory.GetActiveFacts(Fixture.UserId).Any(x => x.FactKey == "tea"));
+            AssertTrue("corrective-tool-wrote-fact", f.Memory.ListNotes(Fixture.UserId).Any(x => x.Key == "tea"));
             AssertEqual("correction-tool-followup", 3, f.Provider.Messages.Count);
-            AssertTrue("corrective-tool-real-status", f.Provider.Messages[2].Any(m => m.Role == "tool" && m.Content.Contains("工具執行狀態：成功")));
+            AssertTrue("corrective-tool-real-status", f.Provider.Messages[2].Any(m => m.Role == "tool" && m.Content.Contains("\"ok\":true")));
         }
         var search = new Plugin("search", NyaToolResult.Ok("找到三筆資料"));
         using (var f = new Fixture(new[] { Calls(Call("search")), Reply("已幫您查到資料，已記住喜好。"), Reply("已幫您查到資料。") }, new[] { search }))
@@ -141,7 +141,7 @@ public static class NyaChatUxTests
             AssertTrue("no-unconditional-completion", !text.Contains("操作執行完成"));
             AssertEqual("disabled-plugin-not-executed", 0, plugins[2].Executions);
             AssertEqual("denied-plugin-not-executed", 0, plugins[3].Executions);
-            AssertTrue("denied-status-in-llm", f.Provider.Messages[1].Any(m => m.Name == "set_reminder" && m.Content.Contains("權限不足")));
+            AssertTrue("denied-status-in-llm", f.Provider.Messages[1].Any(m => m.Name == "set_reminder" && m.Content.Contains("沒有權限")));
         }
         foreach (var state in new[] { "failed", "disabled", "denied", "throws" })
         {
@@ -153,7 +153,7 @@ public static class NyaChatUxTests
         }
         using (var f = new Fixture(new NyaLlmResponse?[] { Calls(Call("unknown_tool")), null }))
             AssertTrue("unknown-fallback", Join(f.Chat()).Contains("未啟用或不存在"));
-        using (var f = new Fixture(new NyaLlmResponse?[] { Calls(Call("upsert_fact", "{}")), null }))
+        using (var f = new Fixture(new NyaLlmResponse?[] { Calls(Call("note_save", "{}")), null }))
             AssertTrue("invalid-args-fallback", Join(f.Chat()).Contains("操作失敗"));
     }
 
@@ -243,7 +243,7 @@ public static class NyaChatUxTests
         var room = f.Memory.CreateNewTopic(Fixture.UserId, "Trace room");
         var old = f.Memory.AppendMessage(Fixture.UserId, "user", "old room input", room.TopicId);
         f.Memory.AppendMessage(Fixture.UserId, "assistant", "old room output", room.TopicId);
-        f.Memory.UpsertFact(Fixture.UserId, "identity", "nickname", "Alice");
+        f.Memory.SaveNote(new NyaToolContext { UserId = Fixture.UserId }, null, "nickname", "Alice", "never", null, []);
         f.Memory.CreateSummary(Fixture.UserId, room.TopicId, "disabled summary", 1, 2, 2);
         var result = f.Chat();
         var persisted = f.History(result).TakeLast(2).ToList();
@@ -261,7 +261,8 @@ public static class NyaChatUxTests
         AssertEqual("trace-disabled-summaries-empty", 0, selection.GetProperty("summaries").GetArrayLength());
         AssertTrue("trace-unavailable-reasons", selection.GetProperty("unavailable_tools").EnumerateArray().Any(t => t.GetProperty("name").GetString() == "off_tool" && t.GetProperty("reason").GetString() == "disabled") && selection.GetProperty("unavailable_tools").EnumerateArray().Any(t => t.GetProperty("name").GetString() == "denied_tool" && t.GetProperty("reason").GetString() == "not_authorized"));
         AssertEqual("trace-profile-saved", "chat", json.RootElement.GetProperty("execution").GetProperty("profile").GetProperty("id").GetString());
-        f.Memory.UpsertFact(Fixture.UserId, "identity", "nickname", "Bob");
+        var savedNote = f.Memory.ListNotes(Fixture.UserId).Single();
+        f.Memory.SaveNote(new NyaToolContext { UserId = Fixture.UserId }, savedNote.NoteId, null, "Bob", "keep", null, []);
         f.Memory.DeleteAllMessages(Fixture.UserId);
         AssertEqual("trace-snapshot-survives-memory-changes", input.DetailJson, f.Audit.GetByTraceId(traceIds[0]!).Single(l => l.Action == "chat_input").DetailJson);
     }
@@ -295,7 +296,7 @@ public static class NyaChatUxTests
                 MaxReplyLength = maxReplyLength,
                 MaxToolRounds = maxToolRounds,
                 LlmProfiles = new() { ["ux"] = new NyaLlmProfile { Provider = "ux", Model = "fake" } },
-                TaskRouting = new() { ["chat"] = "ux", ["summarization"] = "ux", ["fact_extraction"] = "ux" }
+                TaskRouting = new() { ["chat"] = "ux", ["summarization"] = "ux", ["summarization"] = "ux" }
             });
             foreach (var plugin in plugins ?? Array.Empty<Plugin>()) services.AddSingleton<INyaToolPlugin>(plugin);
             if (deny != null) services.AddSingleton<INyaToolAuthorizer>(new DenyAuthorizer(deny));

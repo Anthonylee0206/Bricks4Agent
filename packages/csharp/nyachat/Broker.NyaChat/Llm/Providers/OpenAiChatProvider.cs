@@ -4,13 +4,6 @@ using System.Text.Json.Nodes;
 
 namespace Broker.NyaChat;
 
-/// <summary>
-/// OpenAI Chat Completions provider（<c>POST v1/chat/completions</c>，含 function calling）。
-/// 由原 <c>NyaLlmClient.SendChatCompletionsAsync</c> 搬出，行為等價，唯一變更：
-/// 移除硬編碼 <c>if (model == "qwen3.6:35b-a3b-Q4")</c> hack，改由 profile 的
-/// <see cref="NyaLlmProfile.ModelOverrides"/> 套用至 body 頂層。
-/// 此為 <see cref="NyaLlmClient"/> 未知 provider 時的 fallback（維持原本 default 語意）。
-/// </summary>
 public sealed class OpenAiChatProvider : INyaLlmProvider
 {
     private readonly IHttpClientFactory _httpClientFactory;
@@ -35,13 +28,15 @@ public sealed class OpenAiChatProvider : INyaLlmProvider
         body["model"] = request.Model;
         body["messages"] = NyaLlmSerialization.BuildJsonMessages(request.Messages);
         body["stream"] = false;
-        NyaLlmSerialization.ApplyThinkingParams(body, profile); // thinking：enable_thinking / thinking_budget（頂層）
+        NyaLlmSerialization.ApplyThinkingParams(body, profile);
 
         if (request.MaxTokens.HasValue)
             body["max_tokens"] = request.MaxTokens.Value;
 
         if (request.Tools?.Count > 0)
             body["tools"] = NyaLlmSerialization.BuildToolsJson(request.Tools);
+
+        MergeExtraBody(body, profile.ExtraBody);
 
         using var content = new StringContent(body.ToJsonString(), Encoding.UTF8, "application/json");
         using var response = await client.PostAsync(NyaLlmSerialization.ResolveEndpoint(profile.BaseUrl), content, ct);
@@ -65,7 +60,6 @@ public sealed class OpenAiChatProvider : INyaLlmProvider
         var finishReason = choice.TryGetProperty("finish_reason", out var fr) ? fr.GetString() : null;
         var message = choice.GetProperty("message");
 
-        // tool_calls
         if (finishReason == "tool_calls" &&
             message.TryGetProperty("tool_calls", out var tcs) &&
             tcs.ValueKind == JsonValueKind.Array &&
@@ -80,4 +74,19 @@ public sealed class OpenAiChatProvider : INyaLlmProvider
             ? ct2.GetString() : null;
         return new NyaLlmResponse { Content = NyaLlmSerialization.StripThinkTags(text) };
     }
+    public static void MergeExtraBody(JsonObject body, JsonObject? extra)
+    {
+        if (extra == null) return;
+        if (extra.Any(p => p.Key is "model" or "messages" or "tools" or "stream"))
+            throw new InvalidOperationException("extra_body 不可覆寫保留欄位。");
+        MergeObject(body, extra);
+    }
+
+    private static void MergeObject(JsonObject target, JsonObject source)
+    {
+        foreach (var (key, value) in source)
+            if (value is JsonObject nested && target[key] is JsonObject existing) MergeObject(existing, nested);
+            else target[key] = value?.DeepClone();
+    }
+
 }

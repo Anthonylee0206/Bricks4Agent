@@ -6,11 +6,6 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Broker.Tests;
 
-/// <summary>
-/// 大項二（LLM 提供者抽象與模型分流）單元測試。
-/// 鎖死三件事：(1) role=tool 閉環序列化契約（審查3）、(2) ModelOverrides 取代硬編碼 hack（2C）、
-/// (3) StaticTaskRouter 的 profile 解析、legacy 合成與 BaseUrl 耦合 bug 根除（審查1）。
-/// </summary>
 public static class NyaLlmTests
 {
     private static int _passed;
@@ -40,7 +35,6 @@ public static class NyaLlmTests
         return (_passed, _failed);
     }
 
-    // ── 序列化：role=tool 閉環契約（審查3）──────────────────────────────────────
     private static void TestToolClosureSerialization()
     {
         Console.WriteLine("--- role=tool / assistant(tool_calls) serialization ---");
@@ -107,7 +101,6 @@ public static class NyaLlmTests
         AssertEqual("required-first", "action", required[0]!.GetValue<string>());
     }
 
-    // ── ModelOverrides 取代硬編碼 hack（2C）─────────────────────────────────────
     private static void TestApplyModelOverrides()
     {
         Console.WriteLine("--- ApplyModelOverrides (2C) ---");
@@ -124,13 +117,11 @@ public static class NyaLlmTests
         AssertEqual("override-presence", 1.5d, target["presence_penalty"]!.GetValue<double>());
         AssertEqual("override-top_k", 20d, target["top_k"]!.GetValue<double>());
 
-        // 無 ModelOverrides → no-op
         var none = new JsonObject();
         NyaLlmSerialization.ApplyModelOverrides(none, new NyaLlmProfile { Model = "m" });
         AssertTrue("override-null-empty", none.Count == 0);
     }
 
-    // ── Router：具名 profile 解析 ───────────────────────────────────────────────
     private static void TestRouterNamedProfile()
     {
         Console.WriteLine("--- StaticTaskRouter named profile ---");
@@ -150,7 +141,6 @@ public static class NyaLlmTests
         AssertEqual("named-baseurl", "http://chat", chat.BaseUrl);
     }
 
-    // ── Router：BaseUrl 耦合 bug 根除（審查1）───────────────────────────────────
     private static void TestRouterBaseUrlDecoupled()
     {
         Console.WriteLine("--- StaticTaskRouter BaseUrl decoupled (審查1) ---");
@@ -162,27 +152,25 @@ public static class NyaLlmTests
                 ["chat_default"] = new NyaLlmProfile { Provider = "openai_chat", BaseUrl = "http://openai", Model = "big" },
                 ["extraction"]   = new NyaLlmProfile { Provider = "ollama", BaseUrl = "http://ollama", Model = "small" }
             },
-            TaskRouting = new() { ["chat"] = "chat_default", ["fact_extraction"] = "extraction" }
+            TaskRouting = new() { ["chat"] = "chat_default", ["summarization"] = "extraction" }
         };
 
         var chat = router.Resolve(NyaLlmTasks.Chat, cfg);
-        var ext  = router.Resolve(NyaLlmTasks.FactExtraction, cfg);
+        var ext  = router.Resolve(NyaLlmTasks.Summarization, cfg);
 
-        // 抽取 profile 自帶 BaseUrl，與對話的 BaseUrl 完全脫鉤（不再借用 → bug 根除）
         AssertEqual("decoupled-chat-url", "http://openai", chat.BaseUrl);
         AssertEqual("decoupled-ext-url", "http://ollama", ext.BaseUrl);
         AssertEqual("decoupled-ext-provider", "ollama", ext.Provider);
         AssertTrue("decoupled-urls-differ", chat.BaseUrl != ext.BaseUrl);
     }
 
-    // ── Router：TaskRouting 缺鍵 → 預設 profile 名稱 ────────────────────────────
     private static void TestRouterTaskRoutingFallbackName()
     {
         Console.WriteLine("--- StaticTaskRouter default profile name fallback ---");
         var router = new StaticTaskRouter(NullLogger<StaticTaskRouter>.Instance);
         var cfg = new NyaChatConfig
         {
-            // TaskRouting 缺 summarization → 應回退到預設名稱 "summarization"
+
             LlmProfiles = new() { ["summarization"] = new NyaLlmProfile { Provider = "ollama", Model = "sum-model" } },
             TaskRouting = new()
         };
@@ -191,12 +179,11 @@ public static class NyaLlmTests
         AssertEqual("fallback-name-model", "sum-model", sum.Model);
     }
 
-    // ── Router：legacy 合成（向後相容，零部署改動）──────────────────────────────
     private static void TestRouterLegacySynthesis()
     {
         Console.WriteLine("--- StaticTaskRouter legacy synthesis ---");
         var router = new StaticTaskRouter(NullLogger<StaticTaskRouter>.Instance);
-        // LlmProfiles 為空 → 由扁平欄位合成
+
         var cfg = new NyaChatConfig
         {
             ChatProvider = "openai_chat",
@@ -204,8 +191,8 @@ public static class NyaLlmTests
             ChatModel = "cm",
             Temperature = 1.0f,
             TopP = 0.95f,
-            FactExtractionProvider = "ollama",   // 與 chat 不同 → 觸發 mismatch warning（一次性）
-            FactExtractionModel = ""             // 空 → 繼承 ChatModel
+            SummarizationProvider = "ollama",
+            SummarizationModel = ""
         };
 
         var chat = router.Resolve(NyaLlmTasks.Chat, cfg);
@@ -213,17 +200,16 @@ public static class NyaLlmTests
         AssertEqual("legacy-chat-model", "cm", chat.Model);
         AssertEqual("legacy-chat-temp", 1.0f, chat.Temperature);
 
-        var ext = router.Resolve(NyaLlmTasks.FactExtraction, cfg);
+        var ext = router.Resolve(NyaLlmTasks.Summarization, cfg);
         AssertEqual("legacy-ext-provider", "ollama", ext.Provider);
-        AssertEqual("legacy-ext-model-inherited", "cm", ext.Model);   // 空 → 繼承 ChatModel
-        AssertEqual("legacy-ext-temp-low", 0.2f, ext.Temperature);     // 抽取低溫保留
-        AssertEqual("legacy-ext-baseurl", "http://legacy-chat", ext.BaseUrl); // legacy 沿用 Chat transport
+        AssertEqual("legacy-ext-model-inherited", "cm", ext.Model);
+        AssertEqual("legacy-ext-temp-low", 0.3f, ext.Temperature);
+        AssertEqual("legacy-ext-baseurl", "http://legacy-chat", ext.BaseUrl);
 
         var sum = router.Resolve(NyaLlmTasks.Summarization, cfg);
-        AssertEqual("legacy-sum-temp-low", 0.3f, sum.Temperature);     // 摘要低溫保留
+        AssertEqual("legacy-sum-temp-low", 0.3f, sum.Temperature);
     }
 
-    // ── 跨繫結器契約：ConfigurationBinder（appsettings 路徑）能繫結巢狀數值 ModelOverrides ──
     private static void TestModelOverridesBindFromConfiguration()
     {
         Console.WriteLine("--- ModelOverrides binds via ConfigurationBinder (appsettings path) ---");
@@ -242,7 +228,6 @@ public static class NyaLlmTests
         }
         """;
 
-        // 模擬 Program.cs：builder.Configuration.GetSection("NyaChat").Get<NyaChatConfig>()
         var config = new ConfigurationBuilder()
             .AddJsonStream(new MemoryStream(Encoding.UTF8.GetBytes(json)))
             .Build();
@@ -265,17 +250,11 @@ public static class NyaLlmTests
         AssertEqual("strip-plain", "hello", NyaLlmSerialization.StripThinkTags("  hello  "));
     }
 
-    // ── 防呆：chat 帶 tools 卻被路由到不支援工具的 provider → facade 應告警（QC P5）──
-    // 風險：TaskRouting.chat 指向 openai_responses 類 profile 時，工具閉環（大項四）會「靜默」失效
-    //（provider 直接忽略 tools、不報錯）。facade 偵測 SupportsTools=false + 請求帶 tools 時記 warning。
     private static void TestFacadeWarnsWhenToolsUnsupported()
     {
-        // QC P5 升級（寄宿功課 Phase 4-C 債2）：原本「chat 路由到不支援 tools 的 provider」只在
-        // 執行期記 warning、client 仍能建起來、工具閉環靜默失效。量化工具掛上後這等於金融功能
-        // 靜默故障，已升級為「啟動期 fail-fast」——這種 client 根本建不出來。本測試改為驗證新行為。
+
         Console.WriteLine("--- ctor fails fast when chat resolves to no-tools provider (QC P5 升級為 fail-fast) ---");
 
-        // 不支援工具的 provider → 建構式必拋（finally 仍清理 temp db）
         var threw = false;
         try { WithFacade(supportsTools: false, (_, _) => { }); }
         catch (InvalidOperationException ex)
@@ -285,7 +264,6 @@ public static class NyaLlmTests
         }
         AssertTrue("ctor-fails-fast-when-unsupported", threw);
 
-        // 支援工具的 provider → 正常建起來，帶 tools 的 chat 不告警
         WithFacade(supportsTools: true, (clientYes, logYes) =>
         {
             var withTools = new List<NyaLlmTool> { new() { Function = new NyaLlmFunction { Name = "search" } } };
@@ -317,11 +295,10 @@ public static class NyaLlmTests
         {
             db.Dispose();
             foreach (var p in new[] { path, path + "-shm", path + "-wal" })
-                try { if (File.Exists(p)) File.Delete(p); } catch { /* best-effort */ }
+                try { if (File.Exists(p)) File.Delete(p); } catch {  }
         }
     }
 
-    // ── 測試替身 ──────────────────────────────────────────────────────────────────
     private sealed class FakeProvider : INyaLlmProvider
     {
         public string Key { get; init; } = "fake";
@@ -350,7 +327,6 @@ public static class NyaLlmTests
         }
     }
 
-    // ── assert helpers ──────────────────────────────────────────────────────────
     private static void AssertEqual<T>(string name, T expected, T actual)
     {
         if (Equals(expected, actual)) { Console.WriteLine($"  [PASS] {name}"); _passed++; }

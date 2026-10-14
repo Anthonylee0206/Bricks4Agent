@@ -534,7 +534,7 @@ public class HighLevelCoordinator
             }
         }
 
-        if (ShouldSuggestControlledSearch(decision, parsed))
+        if (_nyaChatOrchestrator?.IsEnabled != true && ShouldSuggestControlledSearch(decision, parsed))
         {
             var permissions = GetEffectivePermissions(profile);
             var suggestionIsTransport = IsTransportLookupSuggestion(parsed);

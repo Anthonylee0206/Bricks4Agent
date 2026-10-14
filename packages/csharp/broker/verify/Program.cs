@@ -1795,13 +1795,14 @@ try
         var coordinatorProjectInterviewWorkflowDesignService = new ProjectInterviewWorkflowDesignService();
         var coordinatorProjectInterviewPdfRenderService = new ProjectInterviewPdfRenderService();
 
+        var toggleNya = new ToggleNyaChatOrchestrator();
         var coordinator = new HighLevelCoordinator(
             coordinatorDb,
             new FakeBrokerService(),
             new FakePlanService(),
             new FakeTaskRouter(),
             lineGateway,
-            null,
+            toggleNya,
             queryMediator,
             new HighLevelRelationQueryService(
                 queryMediator,
@@ -2175,6 +2176,13 @@ try
 
         var railSuggestion = await coordinator.ProcessLineMessageAsync("line-user-e", "台北到台中最晚高鐵班次");
         AssertTrue(railSuggestion.FollowUpMessages != null && railSuggestion.FollowUpMessages.Any(item => item.Contains("?hsr", StringComparison.Ordinal)), "lookup-style transport conversation prompts controlled hsr search as a follow-up command");
+
+        toggleNya.Enabled = true;
+        var nyaLookup = await coordinator.ProcessLineMessageAsync("line-user-e", "我住哪裡你知道嗎？");
+        AssertTrue(nyaLookup.Reply == "nya-verify-reply" && toggleNya.Calls == 1, "lookup-style conversation goes to NyaChat while NyaChat is enabled");
+        toggleNya.Enabled = false;
+        var restoredSuggestion = await coordinator.ProcessLineMessageAsync("line-user-e", "台北到台中最晚高鐵班次");
+        AssertTrue(toggleNya.Calls == 1 && restoredSuggestion.FollowUpMessages != null && restoredSuggestion.FollowUpMessages.Any(item => item.Contains("?hsr", StringComparison.Ordinal)), "lookup-style suggestion returns once NyaChat is disabled");
 
         var explicitSearchReply = await coordinator.ProcessLineMessageAsync("line-user-f", "?search 中央氣象署官網");
         AssertTrue(explicitSearchReply.Reply.Contains("verify-reply", StringComparison.OrdinalIgnoreCase), "explicit search uses high-level model to synthesize broker search results");
@@ -2582,6 +2590,19 @@ file sealed class FakeSiteRebuildPageFetcher : IPageFetcher
         return Task.FromResult(string.IsNullOrWhiteSpace(html)
             ? PageFetchResult.Fail(uri, 404, "not_found")
             : PageFetchResult.Ok(uri, 200, "text/html", html));
+    }
+}
+
+file sealed class ToggleNyaChatOrchestrator : Broker.NyaChat.Abstractions.INyaChatOrchestrator
+{
+    public bool Enabled { get; set; }
+    public int Calls { get; private set; }
+    public bool IsEnabled => Enabled;
+
+    public Task<Broker.NyaChat.Abstractions.NyaChatResult> ChatAsync(Broker.NyaChat.Abstractions.NyaChatRequest request, CancellationToken cancellationToken)
+    {
+        Calls++;
+        return Task.FromResult(new Broker.NyaChat.Abstractions.NyaChatResult { Replies = new[] { "nya-verify-reply" } });
     }
 }
 

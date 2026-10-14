@@ -96,7 +96,7 @@ function UserRow({ user, onNavigate }) {
       <TD muted>{CHANNEL_LABELS[ch] || ch}</TD>
       <TD right>{user.message_count}</TD>
       <TD right>
-        {user.active_fact_count > 0 ? user.active_fact_count : <span style={{ color: 'var(--c-fg4)' }}>0</span>}
+        {user.active_note_count > 0 ? user.active_note_count : <span style={{ color: 'var(--c-fg4)' }}>0</span>}
       </TD>
       <TD muted title={fmtTime(user.last_message_at)}>{fmtRelative(user.last_message_at)}</TD>
       <TD muted title={SOUL_REASON_LABELS[user.soul_reason] || user.soul_reason}>綁定：{user.bound_soul_id ?? '未綁定'}<br />生效：{user.effective_soul_id}</TD>

@@ -1,3 +1,4 @@
+using Broker.NyaChat.Abstractions;
 using System.Net;
 using System.Text.Json;
 using Broker.Endpoints;
@@ -75,84 +76,52 @@ public class NyaChatEndpointAuthorizationTests
 
             const string userId = "line:memory-user";
             var userValues = new Dictionary<string, object?> { ["userId"] = userId };
-            var before = DateTime.UtcNow;
-            var add = await Request("POST", "/users/{userId}/facts", $"/users/{userId}/facts", userValues,
-                "{\"category\":\"context\",\"key\":\"plan\",\"value\":\"interview\",\"source_text\":\"Tomorrow is my interview\",\"expires_in_days\":2}");
+            var add = await Request("POST", "/users/{userId}/notes", $"/users/{userId}/notes", userValues,
+                "{\"key\":\"plan\",\"content\":\"interview\",\"expiry\":{\"mode\":\"on_date\",\"date\":\"2099-01-01\"}}");
             add.Status.Should().Be(200);
-            add.Data.GetProperty("source_text").GetString().Should().Be("Tomorrow is my interview");
-            var expiry = add.Data.GetProperty("expires_at").GetDateTime();
-            expiry.Kind.Should().Be(DateTimeKind.Utc);
-            expiry.Should().BeOnOrAfter(before.AddDays(2)).And.BeOnOrBefore(DateTime.UtcNow.AddDays(2));
-
-            var permanent = await Request("POST", "/users/{userId}/facts", $"/users/{userId}/facts", userValues,
-                "{\"category\":\"identity\",\"key\":\"name\",\"value\":\"NYA\"}");
+            var planId = add.Data.GetProperty("data").GetProperty("note_id").GetString()!;
+            add.Data.GetProperty("data").GetProperty("expires_at").GetDateTime().Should().Be(new DateTime(2099, 1, 1, 16, 0, 0, DateTimeKind.Utc));
+            var permanent = await Request("POST", "/users/{userId}/notes", $"/users/{userId}/notes", userValues,
+                "{\"key\":\"name\",\"content\":\"NYA\",\"expiry\":{\"mode\":\"never\"}}");
             permanent.Status.Should().Be(200);
-            permanent.Data.GetProperty("expires_at").ValueKind.Should().Be(JsonValueKind.Null);
-            permanent.Data.GetProperty("source_text").ValueKind.Should().Be(JsonValueKind.Null);
-            foreach (var invalid in new[] { "0", "-1", "1.5", "\"2\"", "2147483647" })
-            {
-                var bad = await Request("POST", "/users/{userId}/facts", $"/users/{userId}/facts", userValues,
-                    $"{{\"category\":\"context\",\"key\":\"bad\",\"value\":\"bad\",\"expires_in_days\":{invalid}}}");
-                bad.Status.Should().Be(400);
-            }
-            memory.GetFactHistory(userId, "bad").Should().BeEmpty();
-            memory.UpsertFact(userId, "context", "expired", "old", sourceText: "Original old words", expiresAt: before.AddDays(-1));
-            var notes = await Request("GET", "/users/{userId}/facts", $"/users/{userId}/facts", userValues);
-            notes.Status.Should().Be(200);
+            permanent.Data.GetProperty("data").GetProperty("expires_at").ValueKind.Should().Be(JsonValueKind.Null);
+            foreach (var invalid in new[] { "0", "-1", "1.5", "\"days\"", "null" })
+                (await Request("POST", "/users/{userId}/notes", $"/users/{userId}/notes", userValues,
+                    $"{{\"key\":\"bad\",\"content\":\"bad\",\"expiry\":{invalid}}}")).Status.Should().Be(400);
+            var expiredNote = memory.SaveNote(new global::Broker.NyaChat.Abstractions.NyaToolContext { UserId = userId }, null, "expired", "old", "on_date", "2000-01-01", []);
+            var notes = await Request("GET", "/users/{userId}/notes", $"/users/{userId}/notes", userValues);
             notes.Data.GetProperty("total").GetInt32().Should().Be(3);
-            var expired = notes.Data.GetProperty("facts").EnumerateArray().Single(f => f.GetProperty("fact_key").GetString() == "expired");
-            expired.GetProperty("source_text").GetString().Should().Be("Original old words");
-            expired.GetProperty("expires_at").GetDateTime().Kind.Should().Be(DateTimeKind.Utc);
-            expired.GetProperty("is_expired").GetBoolean().Should().BeTrue();
-            memory.GetActiveFacts(userId).Should().HaveCount(2);
+            notes.Data.GetProperty("notes").EnumerateArray().Single(n => n.GetProperty("key").GetString() == "expired").GetProperty("expired").GetBoolean().Should().BeTrue();
+            memory.ListNotes(userId).Should().HaveCount(2);
             memory.SetSoulBinding("binding-only", "NYA");
             memory.CreateNewTopic("topic-only", "Empty room");
             var list = await Request("GET", "/users", "/users");
             var listed = list.Data.GetProperty("users").EnumerateArray().ToArray();
             listed.Should().Contain(u => u.GetProperty("user_id").GetString() == "binding-only");
             listed.Should().Contain(u => u.GetProperty("user_id").GetString() == "topic-only");
-            listed.Single(u => u.GetProperty("user_id").GetString() == userId).GetProperty("active_fact_count").GetInt32().Should().Be(2);
-
-            memory.ForgetFact(userId, "plan").Should().BeTrue();
-            memory.ForgetFact(userId, "expired").Should().BeTrue();
-            memory.UpsertFact("other-user", "context", "plan", "other");
-            memory.ForgetFact("other-user", "plan");
+            listed.Single(u => u.GetProperty("user_id").GetString() == userId).GetProperty("active_note_count").GetInt32().Should().Be(2);
+            var found = await Request("POST", "/users/{userId}/forget-find", $"/users/{userId}/forget-find", userValues,
+                JsonSerializer.Serialize(new { note_ids = new[] { planId, expiredNote.NoteId } }));
+            found.Status.Should().Be(200);
+            var selectionId = found.Data.GetProperty("data").GetProperty("selection_id").GetString();
+            var hidden = await Request("POST", "/users/{userId}/forget", $"/users/{userId}/forget", userValues, JsonSerializer.Serialize(new { selection_id = selectionId }));
+            hidden.Status.Should().Be(200);
+            var forgetId = hidden.Data.GetProperty("data").GetProperty("forget_id").GetString()!;
+            hidden.Data.GetRawText().Should().NotContain("interview");
             auth.CreateOperator("audit", "Audit", LocalAdminRoles.Auditor, "audit-test-password", "local_admin");
             var auditLogin = new DefaultHttpContext();
             auditLogin.Connection.RemoteIpAddress = IPAddress.Loopback;
             auth.Login(auditLogin, "audit", "audit-test-password", null).Authenticated.Should().BeTrue();
             var auditCookie = auditLogin.Response.Headers.SetCookie.Single()!.Split(';', 2)[0];
-            var forgotten = await Request("GET", "/users/{userId}/forgotten", $"/users/{userId}/forgotten", userValues, session: auditCookie);
-            forgotten.Status.Should().Be(200);
-            forgotten.Data.GetProperty("forgotten").GetArrayLength().Should().Be(2);
-            forgotten.Data.GetProperty("forgotten").EnumerateArray().Should().Contain(f =>
-                f.GetProperty("fact_key").GetString() == "plan" && f.GetProperty("fact_value").GetString() == "interview" &&
-                f.GetProperty("created_at").ValueKind == JsonValueKind.String);
-            var factValues = new Dictionary<string, object?> { ["userId"] = userId, ["factKey"] = "plan" };
-            var denied = await Request("DELETE", "/users/{userId}/forgotten/{factKey}", $"/users/{userId}/forgotten/plan", factValues, session: auditCookie);
-            denied.Status.Should().Be(403);
-            memory.UpsertFact(userId, "context", "forget-api", "private-phrase", sourceText: "private original words");
-            var original = memory.AppendMessage(userId, "user", "private original words", "external-1");
-            var forgetValues = new Dictionary<string, object?> { ["userId"] = userId, ["factKey"] = "forget-api" };
-            (await Request("POST", "/users/{userId}/facts/{factKey}/forget", $"/users/{userId}/facts/forget-api/forget", forgetValues, session: auditCookie)).Status.Should().Be(403);
-            memory.GetFactHistory(userId, "forget-api").Should().NotBeEmpty();
-            (await Request("POST", "/users/{userId}/facts/{factKey}/forget", $"/users/{userId}/facts/forget-api/forget", forgetValues)).Status.Should().Be(200);
-            memory.GetFactHistory(userId, "forget-api").Should().BeEmpty();
-            var rule = memory.GetForgotten(userId).Single(f => f.FactKey == "forget-api");
-            rule.ThroughSequence.Should().Be(original.Sequence);
-            memory.SearchConversation(userId, "private", conversationId: "external-1").Should().BeEmpty();
-            memory.AppendMessage(userId, "user", "private original words", "external-1");
-            memory.SearchConversation(userId, "private", conversationId: "external-1").Should().ContainSingle();
-            memory.ClearForgotten(userId, "forget-api");
-            var clear = await Request("DELETE", "/users/{userId}/forgotten/{factKey}", $"/users/{userId}/forgotten/plan", factValues);
-            clear.Status.Should().Be(200);
-            memory.GetForgotten(userId).Should().ContainSingle(f => f.FactKey == "expired");
-            memory.GetForgotten("other-user").Should().ContainSingle();
-            memory.GetFactHistory(userId, "plan").Should().BeEmpty();
-            var missing = await Request("DELETE", "/users/{userId}/forgotten/{factKey}", $"/users/{userId}/forgotten/plan", factValues);
-            missing.Status.Should().Be(404);
-            memory.UpsertFact(userId, "context", "expired", "relearned");
-            memory.GetForgotten(userId).Should().BeEmpty();
+            var references = await Request("GET", "/users/{userId}/hide-references", $"/users/{userId}/hide-references", userValues, session: auditCookie);
+            references.Status.Should().Be(200);
+            references.Data.GetProperty("references").GetArrayLength().Should().Be(2);
+            var forgetValues = new Dictionary<string, object?> { ["userId"] = userId, ["forgetId"] = forgetId };
+            (await Request("POST", "/users/{userId}/hide-references/{forgetId}/unforget", $"/users/{userId}/hide-references/{forgetId}/unforget", forgetValues, session: auditCookie)).Status.Should().Be(403);
+            (await Request("POST", "/users/{userId}/forget", $"/users/{userId}/forget", userValues, "{}", session: auditCookie)).Status.Should().Be(403);
+            (await Request("POST", "/users/{userId}/hide-references/{forgetId}/unforget", $"/users/{userId}/hide-references/{forgetId}/unforget", forgetValues)).Status.Should().Be(200);
+            memory.ListNotes(userId).Should().HaveCount(2);
+            memory.AdminNotes(userId).Should().HaveCount(3);
 
             memory.AppendMessage(userId, "user", "old summarized", "topic-a");
             memory.AppendMessage(userId, "assistant", "old reply", "topic-a");
@@ -170,9 +139,10 @@ public class NyaChatEndpointAuthorizationTests
             empty.Data.GetProperty("active_topic").ValueKind.Should().Be(JsonValueKind.Null);
             memory.GetActiveTopic("overview-only").Should().BeNull();
             var sensitive = memory.AppendMessage(userId, "user", "secret note text", activeTopic.TopicId);
-            memory.UpsertFact(userId, "context", "secret", "secret note text");
-            memory.ForgetFact(userId, "secret", coversPendingTurn: false);
-            var external = memory.AppendMessage(userId, "user", "external isolation", "external-only");
+            memory.Forget(new NyaToolContext { UserId = userId }, null, [], [sensitive.MessageId]);
+            var externalTurn = memory.BeginTurn(userId, "external-turn", "external-only", "external isolation", "external-only");
+            memory.FinishTurn(externalTurn, "external reply");
+            var external = memory.GetAllMessages(userId).Single(m => m.TurnId == externalTurn.TurnId && m.Role == "user");
             var legacy = memory.AppendMessage(userId, "user", "legacy words");
             var messages = await Request("GET", "/users/{userId}/messages", $"/users/{userId}/messages", userValues);
             messages.Data.GetProperty("external_conversations").EnumerateArray().Should().Contain(x => x.GetString() == "external-only");
@@ -189,11 +159,11 @@ public class NyaChatEndpointAuthorizationTests
             trace.Data.GetProperty("logs").GetArrayLength().Should().Be(2);
             trace.Data.GetProperty("logs").EnumerateArray().Should().OnlyContain(l => l.GetProperty("trace_id").GetString() == "trace-admin");
             (await Request("GET", "/audit/traces/{traceId}", "/audit/traces/trace-admin", new() { ["traceId"] = "trace-admin" }, session: "")).Status.Should().Be(401);
-            app.Services.GetRequiredService<NyaToolRegistry>().SetEnabled("upsert_fact", false);
+            app.Services.GetRequiredService<NyaToolRegistry>().SetEnabled("note_save", false);
             var availability = await Request("GET", "/tools/availability", "/tools/availability", query: "?user_id=line%3Atest&channel_type=line", session: auditCookie);
             availability.Status.Should().Be(200);
             availability.Data.GetProperty("tools").EnumerateArray().Should().OnlyContain(t => t.GetProperty("usable").GetBoolean() == t.GetProperty("function_tool").GetBoolean());
-            availability.Data.GetProperty("tools").EnumerateArray().Single(t => t.GetProperty("id").GetString() == "upsert_fact").GetProperty("reason").GetString().Should().Be("disabled");
+            availability.Data.GetProperty("tools").EnumerateArray().Single(t => t.GetProperty("id").GetString() == "note_save").GetProperty("reason").GetString().Should().Be("disabled");
             (await Request("GET", "/tools/availability", "/tools/availability")).Status.Should().Be(400);
             overview.Data.GetProperty("auto_summarize_enabled").GetBoolean().Should().Be(autoSummarize);
             var status = await Request("GET", "/status", "/status");
@@ -250,10 +220,11 @@ public class NyaChatEndpointAuthorizationTests
     [InlineData("/users/user-1/messages")]
     [InlineData("/users/user-1/messages/message-1")]
     [InlineData("/users/user-1/topics")]
-    [InlineData("/users/user-1/facts")]
-    [InlineData("/users/user-1/forgotten")]
-    [InlineData("/users/web%3Auser%2F1/forgotten")]
-    [InlineData("/users/user-1/facts/fact-1/history")]
+    [InlineData("/users/user-1/notes")]
+    [InlineData("/users/user-1/hide-references")]
+    [InlineData("/users/web%3Auser%2F1/selections")]
+    [InlineData("/users/user-1/turns")]
+    [InlineData("/users/user-1/turns/turn-1/work")]
     [InlineData("/users/user-1/summaries")]
     public void UserReads_RequireUserManageOrAuditRead(string path)
     {
@@ -265,15 +236,11 @@ public class NyaChatEndpointAuthorizationTests
     }
 
     [Theory]
-    [InlineData("POST", "/users/user-1/facts")]
-    [InlineData("PUT", "/users/user-1/facts/fact-1")]
-    [InlineData("POST", "/users/user-1/facts/fact-1/rollback")]
-    [InlineData("POST", "/users/user-1/facts/fact-1/forget")]
-    [InlineData("POST", "/users/web%3Auser%2F1/facts/name%2Fkey/forget")]
-    [InlineData("DELETE", "/users/user-1/facts")]
-    [InlineData("DELETE", "/users/user-1/facts/fact-1")]
-    [InlineData("DELETE", "/users/user-1/forgotten/fact-1")]
-    [InlineData("DELETE", "/users/web%3Auser%2F1/forgotten/name%2Fkey")]
+    [InlineData("POST", "/users/user-1/notes")]
+    [InlineData("POST", "/users/user-1/notes/note-1/restore")]
+    [InlineData("POST", "/users/user-1/forget-find")]
+    [InlineData("POST", "/users/user-1/forget")]
+    [InlineData("POST", "/users/web%3Auser%2F1/hide-references/forget-1/unforget")]
     [InlineData("POST", "/users/user-1/messages")]
     [InlineData("PUT", "/users/user-1/messages/message-1")]
     [InlineData("DELETE", "/users/user-1/messages")]
