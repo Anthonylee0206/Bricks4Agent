@@ -202,7 +202,7 @@ public static class NyaPromptTests
             new List<NyaMessage>(), NyaPromptBudget.Unlimited, NyaTokenEstimator.Default, "u1", "line",
             topics, "t_1", out _);
         var sys = msgs[0].Content;
-        AssertTrue("topics-header", sys.Contains("switch_topic") && sys.Contains("不會讓你忘記"));
+        AssertTrue("topics-header", sys.Contains("switch_topic") && sys.Contains("聊天室"));
         AssertTrue("topics-list-t1", sys.Contains("t_1") && sys.Contains("投資"));
         AssertTrue("topics-current-marker", sys.Contains("（目前）"));
 

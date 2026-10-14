@@ -1,4 +1,4 @@
-const { useState, useEffect, useCallback, useRef } = React;
+const { useState, useEffect } = React;
 
 function parseParamsJson(raw) {
   try { return JSON.parse(raw || '{}'); } catch { return {}; }
@@ -114,7 +114,7 @@ function ProfileEditor({ profileId, templates, catalog, onSave, onCancel, saving
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
       <PageHeader title={isNew ? '新增 Profile' : `編輯 Profile — ${profileId}`}>
         <Button variant="ghost" size="sm" icon="arrowLeft" onClick={onCancel}>返回</Button>
-        <Button variant="primary" size="sm" icon="check" loading={saving} onClick={handleSubmit}>儲存</Button>
+        <Button write="super" variant="primary" size="sm" icon="check" loading={saving} onClick={handleSubmit}>儲存</Button>
       </PageHeader>
 
       <ContentArea style={{ flexDirection: 'row', gap: 14, alignItems: 'flex-start' }}>
@@ -228,7 +228,7 @@ function ProfileEditor({ profileId, templates, catalog, onSave, onCancel, saving
               </div>
             </div>
           </Panel>
-          {origProfile?.effective && <Panel title="已儲存 Profile 的實際參數">
+          {origProfile?.effective && <Panel title="依已儲存 Profile 推導的參數">
             <div style={{ padding: 14, color: 'var(--c-fg2)', fontSize: 12 }}>
               <div>{origProfile.effective.precedence}</div>
               <div>取樣落點：{origProfile.effective.sampling_location}</div>
@@ -257,7 +257,7 @@ function FieldRow({ label, hint, required, children, mono }) {
   );
 }
 
-function ProfilesView({ templates, catalog, onEdit, onAdd }) {
+function ProfilesView({ onEdit, onAdd }) {
   const [profiles, setProfiles] = useState([]);
   const [loading, setLoading]   = useState(false);
   const [testing, setTesting] = useState(null);
@@ -296,7 +296,7 @@ function ProfilesView({ templates, catalog, onEdit, onAdd }) {
         <span style={{ fontSize: 13, color: 'var(--c-fg2)' }}>Profile 是一組模型連線設定（供應商、網址、金鑰、模型與參數）</span>
         <div style={{ flex: 1 }} />
         <Button variant="secondary" size="sm" icon="refresh" loading={loading} onClick={load}>重新整理</Button>
-        <Button variant="primary" size="sm" icon="plus" onClick={onAdd}>新增 Profile</Button>
+        <Button write="super" variant="primary" size="sm" icon="plus" onClick={onAdd}>新增 Profile</Button>
       </Toolbar>
 
       <ContentArea>
@@ -312,8 +312,8 @@ function ProfilesView({ templates, catalog, onEdit, onAdd }) {
                     { label: 'Model' },
                     { label: 'Template',   width: 120 },
                     { label: 'API Key',    width: 140 },
-                    { label: '使用中的呼叫點', width: 180 },
-                    { label: '實際取樣參數', width: 220 },
+                    { label: '解析到此 Profile 的呼叫點', width: 180 },
+                    { label: '設定推導參數', width: 220 },
                     { label: '操作 / 連線測試', width: 260, center: true },
                   ]}>
                     {profiles.map(p => (
@@ -326,21 +326,23 @@ function ProfilesView({ templates, catalog, onEdit, onAdd }) {
                         <TD mono>{(p.call_sites || []).join('、') || '未使用'}</TD>
                         <TD>
                           <details>
-                            <summary>實際送出（{p.effective?.sampling_location}）</summary>
+                            <summary>依已儲存 Profile 推導的參數（{p.effective?.sampling_location}）</summary>
                             <pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{JSON.stringify(p.effective?.sampling, null, 2)}</pre>
                             <div>思考欄位：{JSON.stringify(p.effective?.thinking)}</div>
                           </details>
                         </TD>
                         <TD center>
                           <div style={{ display: 'flex', gap: 6, justifyContent: 'center' }}>
-                            <Button variant="ghost" size="sm" icon="edit"
+                            <Button write="super" variant="ghost" size="sm" icon="edit"
                               onClick={() => onEdit(p.profile_id)}>編輯</Button>
-                            <Button variant="secondary" size="sm" loading={testing === p.profile_id} disabled={testing !== null}
+                            <Button write="super" variant="secondary" size="sm" loading={testing === p.profile_id} disabled={testing !== null}
                               onClick={() => testProfile(p)}>測試連線</Button>
-                            <Button variant="ghost" size="sm" icon="trash"
+                            <Button write="super" variant="ghost" size="sm" icon="trash"
                               style={{ color: 'var(--c-danger)' }}
+                              disabled={(p.call_sites || []).includes("__default__")} title={(p.call_sites || []).includes("__default__") ? "請先切換系統預設 Profile，再刪除" : "刪除 Profile"}
                               onClick={() => handleDelete(p)} />
                           </div>
+                          {(p.call_sites || []).includes('__default__') && <div style={{ fontSize: 12, color: 'var(--c-fg2)' }}>系統預設 Profile；請先切換預設再刪除。</div>}
                           {testResults[p.profile_id] && <div role="status" style={{ fontSize: 12, color: testResults[p.profile_id].ok ? 'var(--c-accent-fg)' : 'var(--c-danger)' }}>
                             {testResults[p.profile_id].ok ? '連線成功' : testResults[p.profile_id].error}
                             {testResults[p.profile_id].latency_ms !== undefined && ` · ${testResults[p.profile_id].latency_ms} ms`}
@@ -418,7 +420,7 @@ function RoutingView() {
                     { label: 'Call Site',  width: 260 },
                     { label: '種類',       width: 100 },
                     { label: 'Profile 指派' },
-                    { label: '目前實際使用', width: 280 },
+                    { label: '解析後 Profile', width: 280 },
                     { label: '狀態',       width: 80, center: true },
                   ]}>
                     {callSites.map(cs => {
@@ -436,14 +438,14 @@ function RoutingView() {
                                 value={current}
                                 options={cs === '__default__' ? profileOptions.filter(p => p.value !== '__default__') : profileOptions}
                                 onChange={v => handleRouteChange(cs, v)}
-                                disabled={saving[cs]}
+                                disabled={saving[cs] || !nyaCanWrite('super')}
                                 style={{ minWidth: 280 }}
                               />
                               {saving[cs] && <Spinner size={14} />}
                             </div>
                           </TD>
                           <TD>
-                            <div className="mono">{resolved?.effective_profile_id || '未設定'}</div>
+                            <div>{cs === "chat" ? "現役" : cs === "fact_extraction" ? "無生產呼叫端；設定不會啟動萃取或改變筆記工具" : cs === "summarization" ? (resolved?.execution_enabled ? "自動摘要已開啟" : "自動摘要已關閉，不執行、不注入") : "Fallback"}</div><div className="mono">{resolved?.effective_profile_id || '未設定'}</div>
                             <div style={{ fontSize: 12, color: 'var(--c-fg2)' }}>{resolved?.provider} · {resolved?.model}</div>
                             {resolved?.source === '__default__' && cs !== '__default__' && <div>回退至系統預設</div>}
                           </TD>
@@ -545,8 +547,6 @@ function PageG() {
       />
       {tab === 'profiles' && (
         <ProfilesView
-          templates={templates}
-          catalog={catalog}
           onEdit={openEdit}
           onAdd={openAdd}
         />

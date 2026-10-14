@@ -53,6 +53,7 @@ public class NyaLlmProfileEntry
             foreach (var (key, value) in b.model_overrides) if (value.HasValue) overrides[key] = value.Value;
         return new NyaLlmProfile
         {
+            ProfileId = ProfileId,
             Provider = Provider, BaseUrl = BaseUrl, ApiKey = ApiKey, Model = Model,
             Temperature = b.temperature ?? 0.7f, TopP = b.top_p ?? 0.9f, TimeoutSeconds = b.timeout_seconds ?? 120,
             MaxContextTokens = b.max_context_tokens, ModelOverrides = overrides.Count == 0 ? null : overrides,

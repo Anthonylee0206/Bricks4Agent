@@ -26,6 +26,7 @@ public sealed class NyaPromptBudget
 /// </summary>
 public sealed class NyaPromptBudgetReport
 {
+    public object? Selection { get; set; }
     public int EstimatedTokens { get; set; }
     public int FactsIncluded { get; set; }
     public int FactsDropped { get; set; }

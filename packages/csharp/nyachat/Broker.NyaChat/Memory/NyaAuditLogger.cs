@@ -63,11 +63,14 @@ public class NyaAuditLogger
 
     public void LogChatInput(string userId, string message, string model,
         int factsCount, int summariesCount, int historyCount, int totalLlmMessages,
-        int estimatedTokens = 0, int maxContextTokens = 0, bool truncated = false, string? traceId = null)
+        int estimatedTokens = 0, int maxContextTokens = 0, bool truncated = false, string? traceId = null,
+        object? selection = null, object? execution = null)
         => Write(userId, "chat_input", new
         {
             message,
             model,
+            selection,
+            execution,
             context = new
             {
                 facts = factsCount,
@@ -79,6 +82,16 @@ public class NyaAuditLogger
                 max_context_tokens = maxContextTokens,
                 truncated
             }
+        }, traceId: traceId);
+
+    public void LogLlmRequest(string userId, string traceId, string task, string provider, NyaLlmProfile profile, NyaLlmRequest request)
+        => Write(userId, "llm_request", new
+        {
+            task, provider, profile_id = profile.ProfileId, model = profile.Model,
+            max_tokens = request.MaxTokens, temperature = request.Temperature, top_p = request.TopP,
+            model_overrides = profile.ModelOverrides, enable_thinking = profile.EnableThinking, thinking_budget = profile.ThinkingBudget,
+            messages = request.Messages.Select(m => new { role = m.Role, content = m.Content, name = m.Name, tool_call_id = m.ToolCallId, tool_calls = m.ToolCalls }).ToArray(),
+            function_tools = request.Tools
         }, traceId: traceId);
 
     public void LogChatOutput(string userId, string reply, string model, long latencyMs, int replyCount, string? traceId = null)
@@ -254,7 +267,7 @@ public class NyaAuditLogger
         if (toDate.HasValue) conditions.Add("created_at <= @toDate");
         // 稽核日誌改以關鍵字搜尋——對 detail_json / action / user_id 做 LIKE。
         if (!string.IsNullOrWhiteSpace(keyword))
-            conditions.Add("(detail_json LIKE @keyword OR action LIKE @keyword OR user_id LIKE @keyword)");
+            conditions.Add("(detail_json LIKE @keyword OR action LIKE @keyword OR user_id LIKE @keyword OR log_id LIKE @keyword OR trace_id LIKE @keyword)");
 
         var where = conditions.Count > 0 ? "WHERE " + string.Join(" AND ", conditions) : "";
         var p = new
@@ -282,6 +295,10 @@ public class NyaAuditLogger
             ? new List<NyaAuditLog>()
             : _db.Query<NyaAuditLog>(
                 "SELECT * FROM nya_audit_log WHERE trace_id = @traceId ORDER BY created_at ASC", new { traceId });
+
+    public NyaAuditLog? GetLastChatInput(string userId)
+        => _db.QueryFirst<NyaAuditLog>(
+            "SELECT * FROM nya_audit_log WHERE user_id = @userId AND action = 'chat_input' ORDER BY created_at DESC LIMIT 1", new { userId });
 
     // ── 刪除（管理端專用、不開放 LLM）───────────────────────────────────────────────────
 

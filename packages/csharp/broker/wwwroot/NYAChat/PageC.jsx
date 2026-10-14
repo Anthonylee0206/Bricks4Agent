@@ -3,14 +3,14 @@ const { useState, useEffect, useCallback } = React;
 const C_TABS = [
   { id: 'overview',  label: '概覽',     icon: 'user'     },
   { id: 'messages',  label: '訊息',     icon: 'message'  },
-  { id: 'topics',    label: '話題',     icon: 'list'     },
-  { id: 'facts',     label: '事實',     icon: 'database' },
+  { id: 'topics',    label: '聊天室',   icon: 'list'     },
+  { id: 'facts',     label: '筆記',     icon: 'database' },
   { id: 'summaries', label: '摘要',     icon: 'archive'  },
   { id: 'audit',     label: '稽核',     icon: 'log'      },
 ];
 
-function PageC({ userId, onNavigate }) {
-  const [tab, setTab]           = useState('overview');
+function PageC({ userId, onNavigate, params = new URLSearchParams() }) {
+  const [tab, setTab]           = useState(C_TABS.some(t => t.id === params.get('tab') && (t.id !== 'audit' || nyaCanRead('audit'))) ? params.get('tab') : 'overview');
   const [overview, setOverview] = useState(null);
   const [ovLoading, setOvLoad]  = useState(false);
   const [ovError, setOvError]   = useState(false);
@@ -28,6 +28,9 @@ function PageC({ userId, onNavigate }) {
   }, [userId]);
 
   useEffect(() => { loadOverview(); }, [loadOverview]);
+  useEffect(() => { setTab(C_TABS.some(t => t.id === params.get('tab') && (t.id !== 'audit' || nyaCanRead('audit'))) ? params.get('tab') : 'overview'); }, [params.toString(), nyaCanRead('audit')]);
+  function changeTab(next) { onNavigate('user/' + encodeURIComponent(userId) + '?tab=' + next + (params.get('topic') ? '&topic=' + encodeURIComponent(params.get('topic')) : '') + (params.get('trace') ? '&trace=' + encodeURIComponent(params.get('trace')) : '')); }
+  function refreshAll() { loadOverview(); loadTopicCount(); }
 
   const [topicCount, setTopicCount] = useState(null);
 
@@ -38,7 +41,7 @@ function PageC({ userId, onNavigate }) {
 
   useEffect(() => { loadTopicCount(); }, [loadTopicCount]);
 
-  const tabsWithBadge = C_TABS.map(t => {
+  const tabsWithBadge = C_TABS.filter(t => t.id !== 'audit' || nyaCanRead('audit')).map(t => {
     let badge;
     if (overview) {
       if (t.id === 'messages')  badge = overview.messages.total - overview.messages.deleted;
@@ -68,15 +71,15 @@ function PageC({ userId, onNavigate }) {
         </div>
       </div>
 
-      <TabBar tabs={tabsWithBadge} active={tab} onChange={setTab} />
+      <TabBar tabs={tabsWithBadge} active={tab} onChange={changeTab} />
 
       <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
-        {tab === 'overview'  && <TabC1 userId={userId} overview={overview} loading={ovLoading} error={ovError} onRefresh={loadOverview} />}
-        {tab === 'messages'  && <TabC2 userId={userId} onChanged={loadOverview} />}
+        {tab === 'overview'  && <TabC1 userId={userId} overview={overview} loading={ovLoading} error={ovError} onRefresh={refreshAll} />}
+        {tab === 'messages'  && <TabC2 userId={userId} initialTopic={params.get('topic') || ''} onTopicChange={topic => onNavigate('user/' + encodeURIComponent(userId) + '?tab=messages' + (topic ? '&topic=' + encodeURIComponent(topic) : ''))} onChanged={refreshAll} />}
         {tab === 'topics'    && <TabCTopics userId={userId} onChanged={() => { loadOverview(); loadTopicCount(); }} />}
         {tab === 'facts'     && <TabC4 userId={userId} onChanged={loadOverview} />}
         {tab === 'summaries' && <TabC5 userId={userId} onChanged={loadOverview} />}
-        {tab === 'audit'     && <TabC6 userId={userId} />}
+        {tab === 'audit' && nyaCanRead('audit') && <TabC6 key={params.get('trace') || ''} userId={userId} initialTrace={params.get('trace') || ''} />}
       </div>
     </div>
   );
@@ -90,13 +93,13 @@ function TabC1({ userId, overview, loading, error, onRefresh }) {
     const { messages, facts, summaries } = overview;
     const ok = await showConfirm(
       `清除全部記憶 — ${userId}？`,
-      `將軟刪除 ${messages.active + messages.summarized} 筆訊息、硬刪除 ${facts.total_active} 筆事實、刪除 ${summaries.total_versions} 個摘要，並清除話題與遺忘紀錄（Soul 設定保留）。此操作不可還原。`
+      `將軟刪除 ${messages.active + messages.summarized} 筆訊息、硬刪除所有筆記及歷史版本（含已過期）、刪除 ${summaries.total_versions} 個摘要，並清除聊天室與遺忘紀錄（Soul 設定保留）。此操作不可還原。`
     );
     if (!ok) return;
     setNuke(true);
     const res = await apiCall('DELETE', `users/${encodeURIComponent(userId)}`, { confirm: 'all' });
     if (res.success) {
-      showToast(`已清除全部記憶：訊息 ${res.data.soft_deleted_messages}、事實 ${res.data.deleted_facts}、摘要 ${res.data.deleted_summaries}、話題 ${res.data.deleted_topics}`, 'success');
+      showToast(`已清除全部記憶：訊息 ${res.data.soft_deleted_messages}、筆記版本 ${res.data.deleted_facts}、摘要 ${res.data.deleted_summaries}、聊天室 ${res.data.deleted_topics}、遺忘紀錄 ${res.data.cleared_forgotten}`, 'success');
       onRefresh();
     }
     setNuke(false);
@@ -126,22 +129,17 @@ function TabC1({ userId, overview, loading, error, onRefresh }) {
       </div>
 
       <StatTiles cols={4} items={[
-        { label: '訊息總計', value: m.total },
-        { label: '最近歷史', value: m.recent_history, sub: `上限 ${overview.short_term_message_limit} 則`, accent: 'var(--c-accent-fg)' },
-        { label: '已摘要', value: m.summarized },
-        { label: '已刪除', value: m.deleted, accent: m.deleted ? 'var(--c-fg2)' : undefined },
+        { label: '目前聊天室', value: overview.active_topic?.title || overview.active_topic?.id || '尚未建立' },
+        { label: '目前聊天室的候選近期訊息', value: m.recent_history, sub: `上限 ${overview.short_term_message_limit} 則`, accent: 'var(--c-accent-fg)' },
+        { label: '未過期筆記', value: f.total_active },
+        { label: '遺忘紀錄', value: overview.forgotten_count },
       ]} />
 
-      <div style={{ fontSize: 12, color: 'var(--c-fg2)' }}>
-        最近歷史取未刪除的最新訊息，實際聊天內容仍受 token 預算限制。
-        {overview.auto_summarize_enabled === false && ' 自動摘要已關閉，已摘要標記不會排除訊息。'}
-        {channelOf(userId) === 'line' && ' LINE 對話跨話題維持連續歷史；話題僅為整理標籤。'}
-      </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 14 }}>
-        <Panel title="事實" subtitle={`${f.total_active} 筆有效`}>
+        <Panel title="筆記" subtitle={`${f.total_active} 筆未過期 · 跨聊天室共用`}>
           {catEntries.length === 0
-            ? <EmptyState message="尚無有效事實" />
+            ? <EmptyState message="尚無有效筆記" />
             : <div style={{ padding: '4px 0' }}>
                 {catEntries.map(([cat, cnt]) => (
                   <div key={cat} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '7px 14px' }}>
@@ -156,11 +154,11 @@ function TabC1({ userId, overview, loading, error, onRefresh }) {
           }
         </Panel>
 
-        <Panel title="摘要" subtitle={overview.auto_summarize_enabled === false ? '自動摘要已關閉 · 現有摘要不會用於聊天' : '依話題整理'}>
+        <Panel title="摘要歷史資料" subtitle={overview.auto_summarize_enabled === false ? '自動摘要已關閉 · 現有摘要不會用於聊天' : '依話題整理'}>
           <KVGrid cols={1} items={[
             { label: '有摘要的話題', value: s.active_count ?? 0, mono: true },
             { label: '摘要版本總數', value: s.total_versions, mono: true },
-            { label: '最後涵蓋至 Seq', value: s.latest_covered_to_seq || '—', mono: true },
+            { label: '歷史最大涵蓋 Seq（非當前上下文進度）', value: s.latest_covered_to_seq || '—', mono: true },
           ]} />
         </Panel>
       </div>
@@ -169,16 +167,19 @@ function TabC1({ userId, overview, loading, error, onRefresh }) {
         <Panel title="時間資訊">
           <KVGrid cols={1} items={[
             { label: '最後訊息時間', value: fmtTime(overview.last_message_at), mono: true },
-            { label: '最後事實更新', value: fmtTime(overview.last_fact_updated_at), mono: true },
+            { label: '最後筆記更新（含已過期現行版本）', value: fmtTime(overview.last_fact_updated_at), mono: true },
           ]} />
         </Panel>
-        <SoulBindPanel userId={userId} currentSoulId={overview.bound_soul_id} effectiveSoulId={overview.effective_soul_id} soulReason={overview.soul_reason} onSoulChanged={onRefresh} />
+        <SoulBindPanel userId={userId} availableSouls={overview.available_souls || []} currentSoulId={overview.bound_soul_id} effectiveSoulId={overview.effective_soul_id} soulReason={overview.soul_reason} onSoulChanged={onRefresh} />
       </div>
 
+      {overview.last_turn && <Panel title="最後一輪保存的注入內容" subtitle={fmtTime(overview.last_turn.created_at)}>
+        <TurnContext raw={overview.last_turn.detail_json} traceId={overview.last_turn.trace_id} />
+      </Panel>}
       <DangerZone>
         <DangerAction
           label="清除全部記憶"
-          description="軟刪除所有訊息，硬刪除所有事實、摘要、話題與遺忘紀錄（Soul 設定保留）"
+          description="軟刪除所有訊息，硬刪除所有筆記、摘要、話題與遺忘紀錄（Soul 設定保留）"
           buttonLabel="清除全部記憶"
           loading={nukeLoading}
           onConfirm={handleNuke}
@@ -188,7 +189,7 @@ function TabC1({ userId, overview, loading, error, onRefresh }) {
   );
 }
 
-function TabC2({ userId, onChanged }) {
+function TabC2({ userId, onChanged, initialTopic = '', onTopicChange }) {
   const [messages, setMessages]   = useState([]);
   const [total, setTotal]         = useState(0);
   const [loading, setLoading]     = useState(false);
@@ -200,15 +201,17 @@ function TabC2({ userId, onChanged }) {
   const [delLoading, setDelLoad]  = useState(false);
   const [selDelLoad, setSelDel]   = useState(false);
   const [topics, setTopics]       = useState([]);
-  const [topicFilter, setTopicFilter] = useState('');
+  const [topicFilter, setTopicFilter] = useState(initialTopic);
+  const [external, setExternal] = useState([]);
 
   async function loadMessages(lim, off, topic) {
     const t = topic !== undefined ? topic : topicFilter;
     setLoading(true);
     const params = { limit: lim, offset: off };
-    if (t) params.topic_id = t;
+    if (t === '__legacy__') params.unassigned = true;
+    else if (t) params.topic_id = t;
     const res = await apiCall('GET', `users/${encodeURIComponent(userId)}/messages`, params);
-    if (res.success) { setMessages(res.data.messages); setTotal(res.data.total); }
+    if (res.success) { setMessages(res.data.messages); setTotal(res.data.total); setExternal(res.data.external_conversations || []); }
     setLoading(false);
     setSelected(new Set());
   }
@@ -218,7 +221,7 @@ function TabC2({ userId, onChanged }) {
     if (res.success) setTopics(res.data.topics);
   }
 
-  useEffect(() => { setTopicFilter(''); loadTopics(); loadMessages(limit, 0, ''); }, [userId]);
+  useEffect(() => { setTopicFilter(initialTopic); setOffset(0); loadTopics(); loadMessages(limit, 0, initialTopic); }, [userId, initialTopic]);
 
   function toggleSelect(id) {
     setSelected(prev => {
@@ -280,27 +283,25 @@ function TabC2({ userId, onChanged }) {
       <Toolbar>
         <Button variant="ghost" size="sm" icon="refresh" loading={loading}
           onClick={() => loadMessages(limit, offset)}>重新整理</Button>
-        <span style={{ fontSize: 12, color: 'var(--c-fg2)' }}>話題（僅整理標籤）</span>
+        <span style={{ fontSize: 12, color: 'var(--c-fg2)' }}>話題</span>
         <Select value={topicFilter}
-          options={[{ value: '', label: '全部標籤／連續歷史' },
-            ...topics.map(t => ({ value: t.topic_id, label: (t.is_active ? '★ ' : '') + (t.title || t.topic_id) }))]}
-          onChange={v => { setTopicFilter(v); setOffset(0); loadMessages(limit, 0, v); }}
+          options={[{ value: '', label: '全部儲存訊息' },
+            ...topics.map(t => ({ value: t.topic_id, group: '使用者聊天室', label: (t.is_active ? '★ 目前聊天室：' : '') + (t.title || t.topic_id) })),
+            ...external.map(id => ({ value: id, group: '外部隔離會話', label: id })),
+            { value: '__legacy__', group: '舊版未歸屬訊息', label: '未歸屬訊息' }]}
+          onChange={v => { if (onTopicChange) onTopicChange(v); else { setTopicFilter(v); setOffset(0); loadMessages(limit, 0, v); } }}
           style={{ width: 200 }} />
         <div style={{ flex: 1 }} />
         {selected.size > 0 && (
-          <Button variant="danger" size="sm" loading={selDelLoad} onClick={handleDeleteSelected}>
+          <Button write="user" variant="danger" size="sm" loading={selDelLoad} onClick={handleDeleteSelected}>
             軟刪除選取（{selected.size}）
           </Button>
         )}
-        <Button variant="danger" size="sm" loading={delLoading} onClick={handleDeleteAll}>軟刪除全部</Button>
+        <Button write="user" variant="danger" size="sm" loading={delLoading} onClick={handleDeleteAll}>軟刪除全部</Button>
       </Toolbar>
 
-      {channelOf(userId) === 'line' && (
-        <div style={{ padding: '8px 14px', fontSize: 12, color: 'var(--c-fg2)' }}>
-          LINE 對話使用跨話題的連續歷史。此篩選只整理檢視，不會限制聊天的歷史範圍。
-        </div>
-      )}
 
+      <div style={{ padding: '8px 14px', fontSize: 12, color: 'var(--c-fg2)' }}>管理員瀏覽儲存訊息；聊天只讀目前聊天室。以下為目前候選診斷，當輪 token 裁切請查 trace；摘要旗標在摘要關閉時不阻止注入。</div>
       <div style={{ flex: 1, overflow: 'auto' }}>
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, background: 'var(--c-surface)' }}>
           <thead>
@@ -354,14 +355,15 @@ function TabC2({ userId, onChanged }) {
                         <td style={{ padding: '8px 12px', whiteSpace: 'nowrap' }}>
                           <div style={{ display: 'flex', gap: 4 }}>
                             {isDel && <Badge color="var(--c-danger)">已刪除</Badge>}
-                            {isSum && <Badge>已摘要</Badge>}
+                            {isSum && <Badge>歷史摘要旗標</Badge>}
+                            {(msg.exclusion_reasons || []).map(reason => <Badge key={reason}>{({ forgotten: '受遺忘規則排除', other_conversation: '非目前聊天室', outside_recent_window: '超出近期窗口', summarized: '摘要啟用時由摘要接手' })[reason] || reason}</Badge>)}
                           </div>
                         </td>
                         <td className="mono" style={{ padding: '8px 12px', fontSize: 11, color: 'var(--c-fg2)', whiteSpace: 'nowrap' }}>
                           {fmtTimeShort(msg.created_at)}
                         </td>
                         <td style={{ padding: '8px 12px' }}>
-                          <Button variant="ghost" size="sm" icon="eye" onClick={() => showDetail(msg)}>全文</Button>
+                          <Button variant="ghost" size="sm" icon="eye" onClick={() => showDetail(msg)}>全文</Button><MessageTrace metadata={msg.metadata_json} />
                         </td>
                       </TR>
                     );
@@ -446,7 +448,7 @@ function TabCTopics({ userId, onChanged }) {
   }
 
   async function handleSwitch(topicId, title) {
-    const ok = await showConfirm(`切換至話題「${title}」？`, '後續對話訊息將被標記至此話題。');
+    const ok = await showConfirm(`切換至話題「${title}」？`, '下一輪起使用此聊天室的近期對話；其他聊天室對話保留，筆記共用，歷史搜尋可跨一般聊天室。');
     if (!ok) return;
     setSwLoad(p => ({ ...p, [topicId]: true }));
     const res = await apiCall('POST', `users/${encodeURIComponent(userId)}/topics/${encodeURIComponent(topicId)}/switch`);
@@ -505,15 +507,16 @@ function TabCTopics({ userId, onChanged }) {
         </div>
       )}
 
-      <Panel title="話題列表" subtitle={`${topics.length} 個話題`}
+      <Panel title="聊天室列表" subtitle={`${topics.length} 個話題`}
         actions={
           <div style={{ display: 'flex', gap: 6 }}>
-            <Button variant="primary" size="sm" icon="plus" loading={newLoading} onClick={handleNewTopic}>新話題</Button>
+            <Button write="user" variant="primary" size="sm" icon="plus" loading={newLoading} onClick={handleNewTopic}>新話題</Button>
             <Button variant="ghost" size="sm" icon="refresh" loading={loading} onClick={loadTopics}>重新整理</Button>
           </div>
         }>
+        <div style={{ padding: '8px 14px', color: 'var(--c-fg2)', fontSize: 12 }}>新建／切換於下一輪生效，本輪訊息仍屬原聊天室；外部明確 conversation id 優先於目前聊天室。筆記共用，歷史搜尋可跨一般聊天室。</div>
         <Table columns={[
-          { label: '話題名稱' },
+          { label: '聊天室名稱' },
           { label: 'ID', width: 160 },
           { label: '狀態', width: 88, center: true },
           { label: '訊息數', width: 72, center: true },
@@ -541,13 +544,13 @@ function TabCTopics({ userId, onChanged }) {
                     <TD>
                       <div style={{ display: 'flex', gap: 4 }}>
                         {!t.is_active && (
-                          <Button variant="ghost" size="sm" icon="arrowRight"
+                          <Button write="user" variant="ghost" size="sm" icon="arrowRight"
                             loading={swLoading[t.topic_id]}
                             onClick={() => handleSwitch(t.topic_id, t.title)}>切換</Button>
                         )}
-                        <Button variant="ghost" size="sm" icon="edit"
+                        <Button write="user" variant="ghost" size="sm" icon="edit"
                           onClick={() => openRename(t)}>改名</Button>
-                        <Button variant="danger" size="sm" icon="trash"
+                        <Button write="user" variant="danger" size="sm" icon="trash"
                           loading={delLoading[t.topic_id]}
                           onClick={() => handleDelete(t.topic_id, t.title, t.msg_count)}>刪除</Button>
                       </div>
@@ -568,7 +571,7 @@ function TabCTopics({ userId, onChanged }) {
               onChange={setRenameValue} onKeyDown={e => e.key === 'Enter' && submitRename()} />
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
               <Button variant="ghost" size="sm" onClick={() => setRenameTarget(null)}>取消</Button>
-              <Button variant="primary" size="sm" loading={renameLoading}
+              <Button write="user" variant="primary" size="sm" loading={renameLoading}
                 disabled={!renameValue.trim()} onClick={submitRename}>儲存</Button>
             </div>
           </div>

@@ -1,6 +1,6 @@
 const { useState, useEffect } = React;
 
-const TOOL_GROUP_LABELS = { topic: '話題', memory: '記憶', fact: '事實', search: '搜尋', transport: '交通' };
+const TOOL_GROUP_LABELS = { topic: '聊天室', memory: '筆記', search: '搜尋', transport: '交通' };
 
 const TOOL_PERMISSION_LABELS = {
   query: '需要「允許查詢」',
@@ -14,7 +14,7 @@ function permissionLabel(perm) {
 
 function Switch({ on, busy, onClick, label }) {
   return (
-    <button role="switch" aria-checked={on} aria-label={label} onClick={onClick} disabled={busy}
+    <button role="switch" aria-checked={on} aria-label={label} onClick={onClick} disabled={busy || !nyaCanWrite('system')}
       style={{
         width: 34, height: 20, borderRadius: 10, border: 'none', padding: 0,
         background: on ? 'var(--c-accent)' : 'var(--c-border)', position: 'relative',
@@ -29,6 +29,19 @@ function PageF() {
   const [tools, setTools]       = useState([]);
   const [loading, setLoading]   = useState(false);
   const [toggling, setToggling] = useState({});
+  const [userId, setUserId] = useState('');
+  const [channel, setChannel] = useState('line');
+  const [availability, setAvailability] = useState(null);
+  const [diagnosing, setDiagnosing] = useState(false);
+
+  async function diagnose() {
+    if (!userId.trim()) return;
+    setDiagnosing(true);
+    setAvailability(null);
+    const res = await apiCall('GET', 'tools/availability', { user_id: userId.trim(), channel_type: channel });
+    if (res.success) setAvailability(res.data);
+    setDiagnosing(false);
+  }
 
   async function loadTools() {
     setLoading(true);
@@ -44,6 +57,7 @@ function PageF() {
     if (res.success) {
       setTools(prev => prev.map(t => t.id === tool.id ? { ...t, enabled: newEnabled } : t));
       showToast(`${tool.name} 已${newEnabled ? '啟用' : '停用'}`, 'success');
+      if (availability) diagnose();
     }
     setToggling(p => ({ ...p, [tool.id]: false }));
   }
@@ -62,6 +76,16 @@ function PageF() {
       </PageHeader>
 
       <ContentArea>
+        <Panel title="使用者工具可用性" subtitle={availability ? `${availability.user_id} · ${availability.channel_type} · ${availability.usable_count} 個可用` : undefined}>
+          <Toolbar><Input value={userId} onChange={v => { setUserId(v); setAvailability(null); }} placeholder="正規化 User ID" mono />
+            <Input value={channel} onChange={v => { setChannel(v); setAvailability(null); }} placeholder="通道，例如 line" />
+            <Button loading={diagnosing} onClick={diagnose}>診斷</Button>
+            <a href="/line-admin.html#line">Broker「LINE 與使用者」權限</a>
+          </Toolbar>
+          {availability && <Table columns={[{ label: '工具' }, { label: '全域開關' }, { label: '使用者可用性' }, { label: 'Function tools' }, { label: '參數' }]}>
+            {availability.tools.map(t => <TR key={t.id}><TD mono>{t.id}</TD><TD>{t.enabled ? '啟用' : '停用'}</TD><TD>{t.usable ? '可用' : t.reason === 'disabled' ? 'disabled：管理員已關閉' : 'not_authorized：使用者未授權'}</TD><TD>{t.function_tool ? '列入' : '不列入'}</TD><TD><details><summary>參數結構</summary><JsonBlock raw={JSON.stringify(t.parameters)} /></details></TD></TR>)}
+          </Table>}
+        </Panel>
         {loading && tools.length === 0
           ? <Panel><EmptyState loading /></Panel>
           : tools.length === 0
@@ -81,6 +105,9 @@ function PageF() {
                         {permissionLabel(tool.required_permission) && <Badge>{permissionLabel(tool.required_permission)}</Badge>}
                       </div>
                       <div style={{ fontSize: 13, color: 'var(--c-fg2)', marginTop: 2 }}>{tool.description}</div>
+                      {tool.name === 'search_history' && <div>跨此使用者的一般聊天室搜尋原始對話，排除遺忘；外部明確 conversation id 僅搜尋自身。query 為關鍵字，limit 為回傳上限。</div>}
+                      {tool.name === 'search' && <div>即時網路搜尋，與使用者歷史對話搜尋分開。</div>}
+                      {tool.required_permission && <a href="/line-admin.html#line">到 Broker「LINE 與使用者」調整權限</a>}
                     </div>
                     <span style={{ fontSize: 12, color: tool.enabled ? 'var(--c-accent-fg)' : 'var(--c-fg3)', width: 48, textAlign: 'right' }}>
                       {tool.enabled ? '已啟用' : '已停用'}

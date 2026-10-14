@@ -43,7 +43,7 @@ function TabC4({ userId, onChanged }) {
   useEffect(() => { loadFacts(); }, [userId]);
 
   async function handleUnforget(factKey) {
-    const ok = await showConfirm(`解除遺忘「${factKey}」？`, 'NYA 可再次從對話中學習此事項；原筆記不會自動還原。');
+    const ok = await showConfirm(`解除遺忘「${factKey}」？`, '尚存的舊原文可能立即重新進入近期歷史與搜尋；原筆記及已刪摘要不會自動還原。');
     if (!ok) return;
     setUnforgetLoading(p => ({ ...p, [factKey]: true }));
     const res = await apiCall('DELETE', `users/${encodeURIComponent(userId)}/forgotten/${encodeURIComponent(factKey)}`);
@@ -60,18 +60,24 @@ function TabC4({ userId, onChanged }) {
   }
 
   async function handleRollback(factKey, targetVersion) {
-    const ok = await showConfirm(`回滾事實 ${factKey}？`, `將把 ${factKey} 回滾至版本 ${targetVersion}。目前版本將被退役。`);
+    const ok = await showConfirm(`回滾筆記 ${factKey}？`, `將把 ${factKey} 回滾至版本 ${targetVersion}。目前版本將被退役。`);
     if (!ok) return;
     const res = await apiCall('POST', `users/${encodeURIComponent(userId)}/facts/${encodeURIComponent(factKey)}/rollback`, { target_version: targetVersion });
     if (res.success) { showToast(`已回滾 ${factKey} 至版本 ${res.data.rolled_to_version}`, 'success'); loadFacts(); setHistModal(null); onChanged && onChanged(); }
   }
 
+  async function handleForget(factKey) {
+    if (!await showConfirm(`遺忘「${factKey}」？`, '刪除所有筆記版本與匹配摘要，保存匹配文字及序號界線，排除既有匹配原文；後續重新告知仍可見。')) return;
+    const res = await apiCall('POST', `users/${encodeURIComponent(userId)}/facts/${encodeURIComponent(factKey)}/forget`, {});
+    if (res.success) { showToast('已遺忘筆記', 'success'); loadFacts(); onChanged && onChanged(); }
+  }
+
   async function handleDeleteFact(factKey) {
-    const ok = await showConfirm(`刪除事實 ${factKey}？`, `將永久硬刪除 factKey「${factKey}」的所有版本，不可還原。`);
+    const ok = await showConfirm(`硬刪筆記 ${factKey}？`, `將永久硬刪除 factKey「${factKey}」的所有版本，不可還原；原始對話仍可能被聊天與歷史搜尋帶回。`);
     if (!ok) return;
     setDLoad(p => ({ ...p, [factKey]: true }));
     const res = await apiCall('DELETE', `users/${encodeURIComponent(userId)}/facts/${encodeURIComponent(factKey)}`);
-    if (res.success) { showToast(`已刪除 ${factKey}（${res.data.deleted_versions} 個版本）`, 'success'); loadFacts(); onChanged && onChanged(); }
+    if (res.success) { showToast(`已硬刪筆記 ${factKey}`, 'success'); loadFacts(); onChanged && onChanged(); }
     setDLoad(p => ({ ...p, [factKey]: false }));
   }
 
@@ -81,6 +87,10 @@ function TabC4({ userId, onChanged }) {
     if (days !== null && (!Number.isSafeInteger(days) || days <= 0)) {
       showToast('有效天數請填正整數，留空為長期有效', 'info'); return;
     }
+    if (facts.some(f => f.fact_key === form.key.trim()) || forgotten.some(f => f.fact_key === form.key.trim())) {
+      const ok = await showConfirm('覆蓋既有筆記／解除同 Key 遺忘', (days === null ? '有效天數留空會清除原期限，改為長期有效。' : '新期限會取代原期限。') + '新增相同 Key 會解除遺忘，尚存舊原文可能立即重新進入近期歷史與搜尋；原筆記與已刪摘要不會自動還原。');
+      if (!ok) return;
+    }
     setAddLoad(true);
     const res = await apiCall('POST', `users/${encodeURIComponent(userId)}/facts`, {
       category: form.category, key: form.key.trim(), value: form.value.trim(),
@@ -89,7 +99,7 @@ function TabC4({ userId, onChanged }) {
       expires_in_days: days,
     });
     if (res.success) {
-      showToast(`已新增／覆蓋事實 ${res.data.fact_key}（版本 ${res.data.version}）`, 'success');
+      showToast(`已新增／覆蓋筆記 ${res.data.fact_key}（版本 ${res.data.version}）`, 'success');
       setForm({ category: 'identity', key: '', value: '', confidence: '1.0', sourceText: '', expiresInDays: '' });
       loadFacts(); onChanged && onChanged();
     }
@@ -97,10 +107,10 @@ function TabC4({ userId, onChanged }) {
   }
 
   async function handleDeleteAll() {
-    const ok = await showConfirm('硬刪除全部事實？', `將永久刪除此用戶的全部 ${facts.length} 筆事實（含所有版本），不可還原。`);
+    const ok = await showConfirm('硬刪除全部筆記？', `將永久刪除此用戶的全部 ${facts.length} 筆筆記（含所有版本），不可還原。`);
     if (!ok) return;
     const res = await apiCall('DELETE', `users/${encodeURIComponent(userId)}/facts`);
-    if (res.success) { showToast(`已刪除全部 ${res.data.deleted} 筆事實`, 'success'); loadFacts(); onChanged && onChanged(); }
+    if (res.success) { showToast(`已刪除所有筆記及歷史版本（${res.data.deleted} 個版本）`, 'success'); loadFacts(); onChanged && onChanged(); }
   }
 
   const grouped = facts.reduce((acc, f) => {
@@ -154,8 +164,9 @@ function TabC4({ userId, onChanged }) {
                       </div>
                       <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
                         <Button variant="ghost" size="sm" icon="history" onClick={() => showHistory(f.fact_key)}>歷史</Button>
-                        <Button variant="ghost" size="sm" icon="trash" loading={deleteLoading[f.fact_key]}
-                          onClick={() => handleDeleteFact(f.fact_key)} style={{ color: 'var(--c-danger)' }}>刪除</Button>
+                        <Button write="user" variant="ghost" size="sm" icon="trash" loading={deleteLoading[f.fact_key]}
+                          onClick={() => handleDeleteFact(f.fact_key)} style={{ color: 'var(--c-danger)' }}>硬刪筆記</Button>
+                        <Button write="user" variant="ghost" size="sm" onClick={() => handleForget(f.fact_key)}>遺忘</Button>
                       </div>
                     </div>
                   ))}
@@ -164,7 +175,7 @@ function TabC4({ userId, onChanged }) {
         }
       </Panel>
 
-      <Panel title="手動新增 / 覆蓋事實" accent="var(--c-accent)">
+      <Panel title="手動新增 / 覆蓋筆記" accent="var(--c-accent)">
         <div style={{ padding: 14, display: 'flex', gap: 10, alignItems: 'flex-end', flexWrap: 'wrap' }}>
           <FactField label="Category">
             <Select value={form.category} options={CATS} onChange={v => setForm(p => ({ ...p, category: v }))} style={{ width: 130 }} />
@@ -173,7 +184,7 @@ function TabC4({ userId, onChanged }) {
             <Input value={form.key} placeholder="fact_key" mono onChange={v => setForm(p => ({ ...p, key: v }))} style={{ width: 140 }} />
           </FactField>
           <FactField label="Value" flex={1}>
-            <Input value={form.value} placeholder="事實內容" onChange={v => setForm(p => ({ ...p, value: v }))} style={{ width: '100%', minWidth: 160 }} />
+            <Input value={form.value} placeholder="筆記內容" onChange={v => setForm(p => ({ ...p, value: v }))} style={{ width: '100%', minWidth: 160 }} />
           </FactField>
           <FactField label="Confidence">
             <Input value={form.confidence} type="number" placeholder="1.0" mono onChange={v => setForm(p => ({ ...p, confidence: v }))} style={{ width: 84 }} />
@@ -184,13 +195,13 @@ function TabC4({ userId, onChanged }) {
           <FactField label="有效天數（選填）">
             <Input value={form.expiresInDays} type="number" placeholder="留空為長期" mono onChange={v => setForm(p => ({ ...p, expiresInDays: v }))} style={{ width: 120 }} />
           </FactField>
-          <Button variant="primary" size="md" icon="plus" loading={addLoading} onClick={handleAddFact}>送出</Button>
+          <Button write="user" variant="primary" size="md" icon="plus" loading={addLoading} onClick={handleAddFact}>送出</Button>
         </div>
       </Panel>
 
       <Panel title="遺忘紀錄" subtitle={`${forgotten.length} 筆`}>
         <div style={{ padding: '8px 14px', fontSize: 12, color: 'var(--c-fg2)' }}>
-          NYA 會避免再提起這些事項。解除遺忘後可再次學習；新增相同 Key 的筆記也會解除遺忘。
+          依匹配文字與序號界線排除既有原文，後續重新告知仍可見；這不是永久語意封鎖。解除遺忘或新增相同 Key 後，尚存舊原文可能立即回到近期歷史與搜尋；原筆記與已刪摘要不會自動還原。
         </div>
         <Table columns={[
           { label: 'Key', width: 160 },
@@ -203,22 +214,22 @@ function TabC4({ userId, onChanged }) {
             : forgotten.map(f => (
               <TR key={f.fact_key}>
                 <TD mono>{f.fact_key}</TD>
-                <TD><div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{f.fact_value}</div></TD>
+                <TD><div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{f.fact_value}</div><details><summary>過濾範圍</summary><div>{f.through_sequence > 0 ? `涵蓋至序號：${f.through_sequence}` : `舊版時間界線：${fmtTime(f.created_at)}`}</div><div>匹配文字：{(f.match_terms || []).join("、") || "無"}</div></details></TD>
                 <TD mono muted>{fmtTime(f.created_at)}</TD>
-                <TD><Button variant="ghost" size="sm" icon="undo" loading={unforgetLoading[f.fact_key]} onClick={() => handleUnforget(f.fact_key)}>解除遺忘</Button></TD>
+                <TD><Button write="user" variant="ghost" size="sm" icon="undo" loading={unforgetLoading[f.fact_key]} onClick={() => handleUnforget(f.fact_key)}>解除遺忘</Button></TD>
               </TR>
             ))}
         </Table>
       </Panel>
 
       <DangerZone>
-        <DangerAction label="硬刪除全部事實"
-          description={`永久刪除全部 ${facts.length} 筆事實的所有版本，不可還原`}
+        <DangerAction label="硬刪除全部筆記"
+          description={`永久刪除全部 ${facts.length} 筆筆記的所有版本，不可還原`}
           buttonLabel="硬刪除全部" onConfirm={handleDeleteAll} />
       </DangerZone>
 
       {histModal && (
-        <Modal title={`事實歷史版本 · ${histModal.factKey}`} onClose={() => setHistModal(null)} width={640}>
+        <Modal title={`筆記歷史版本 · ${histModal.factKey}`} onClose={() => setHistModal(null)} width={640}>
           {histLoading
             ? <EmptyState loading />
             : <Table columns={[
@@ -240,9 +251,9 @@ function TabC4({ userId, onChanged }) {
                           <div style={{ color: 'var(--c-fg2)' }}>到期日：{h.expires_at ? fmtTime(h.expires_at) : '長期有效'}</div>
                         </div></TD>
                         <TD mono center>{Number(h.confidence).toFixed(2)}</TD>
-                        <TD center>{h.is_active ? <StatusBadge ok>active</StatusBadge> : <StatusBadge idle>舊版</StatusBadge>}</TD>
+                        <TD center>{h.is_active ? <StatusBadge ok>目前保存版本</StatusBadge> : <StatusBadge idle>舊版</StatusBadge>}</TD>
                         <TD mono muted style={{ fontSize: 11 }}>{fmtTimeShort(h.created_at)}</TD>
-                        <TD>{!h.is_active && <Button variant="ghost" size="sm" icon="undo" onClick={() => handleRollback(histModal.factKey, h.version)}>回滾</Button>}</TD>
+                        <TD>{!h.is_active && <Button write="user" variant="ghost" size="sm" icon="undo" onClick={() => handleRollback(histModal.factKey, h.version)}>回滾</Button>}</TD>
                       </TR>
                     ))
                 }
@@ -295,7 +306,7 @@ function TabC5({ userId, onChanged }) {
   }
 
   async function handleRollback(summaryId, version) {
-    const ok = await showConfirm(`回滾至摘要版本 ${version}？`, `目前的 active 版本將被退役，版本 ${version} 成為新的 active 摘要。`);
+    const ok = await showConfirm(`回滾至摘要版本 ${version}？`, `目前保存版本將被退役，版本 ${version} 成為目前保存版本。${autoSummarizeEnabled === false ? "自動摘要已關閉，回滾不會讓摘要注入聊天；只維護歷史資料及訊息旗標。" : "回滾同時調整訊息摘要旗標。"}`);
     if (!ok) return;
     setRBLoad(p => ({ ...p, [summaryId]: true }));
     const res = await apiCall('POST', `users/${encodeURIComponent(userId)}/summaries/${encodeURIComponent(summaryId)}/rollback`);
@@ -330,7 +341,7 @@ function TabC5({ userId, onChanged }) {
     return items.map(s => (
       <TR key={s.summary_id} selected={s.is_active}>
         <TD mono center>v{s.version}</TD>
-        <TD center>{s.is_active ? <StatusBadge ok>active</StatusBadge> : <StatusBadge idle>舊版</StatusBadge>}</TD>
+        <TD center>{s.is_active ? <StatusBadge ok>目前保存版本</StatusBadge> : <StatusBadge idle>舊版</StatusBadge>}</TD>
         <TD>
           <div
             onClick={() => setFullText({ summaryId: s.summary_id, version: s.version, text: s.summary_text || s.summary_preview })}
@@ -342,7 +353,7 @@ function TabC5({ userId, onChanged }) {
         <TD mono muted style={{ fontSize: 11 }}>#{s.covered_from_seq}–#{s.covered_to_seq}</TD>
         <TD mono center>{s.message_count}</TD>
         <TD mono muted style={{ fontSize: 11 }}>{fmtTimeShort(s.created_at)}</TD>
-        <TD>{!s.is_active && <Button variant="ghost" size="sm" icon="undo" loading={rbLoading[s.summary_id]} onClick={() => handleRollback(s.summary_id, s.version)}>回滾</Button>}</TD>
+        <TD>{!s.is_active && <Button write="user" variant="ghost" size="sm" icon="undo" loading={rbLoading[s.summary_id]} onClick={() => handleRollback(s.summary_id, s.version)}>回滾</Button>}</TD>
       </TR>
     ));
   }

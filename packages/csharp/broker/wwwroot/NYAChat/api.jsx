@@ -1,5 +1,25 @@
 
+function nyaHas(permission) {
+  return (window.__nyaAuth?.permissions || []).includes(permission);
+}
+
+function nyaCanWrite(scope) {
+  if (scope === 'super') return window.__nyaAuth?.role === 'super_admin';
+  return nyaHas(scope === 'system' ? 'system.worker.manage' : 'permission.user.manage');
+}
+
+function nyaCanRead(page) {
+  if (page === 'audit') return nyaHas('audit.read');
+  if (page === 'users' || page === 'user') return nyaHas('permission.user.manage') || nyaHas('audit.read');
+  if (page === 'llm') return nyaHas('system.status.read');
+  return nyaHas('system.status.read') || nyaHas('audit.read');
+}
+
 async function apiCall(method, path, params) {
+  if (method !== 'GET' && !window.MOCK_MODE) {
+    const scope = path.startsWith('llm/') || path.startsWith('audit') || /\/audit$/.test(path) ? 'super' : path.startsWith('users/') ? 'user' : 'system';
+    if (!nyaCanWrite(scope)) return { success: false, message: '目前帳號沒有此操作權限', error_code: 403 };
+  }
   if (window.MOCK_MODE) {
     await new Promise(r => setTimeout(r, window.MOCK_DELAY || 200));
     try {

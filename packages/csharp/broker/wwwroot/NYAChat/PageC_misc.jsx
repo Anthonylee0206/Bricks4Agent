@@ -2,7 +2,7 @@ const { useState, useEffect } = React;
 
 const ACTION_LABELS = {
   chat_input: '使用者訊息', chat_output: 'NYA 回覆',
-  fact_extract: '萃取事實', fact_upsert: '寫入事實', fact_rollback: '回滾事實',
+  fact_extract: '萃取事實（歷史）', fact_upsert: '寫入筆記', fact_rollback: '回滾筆記',
   summary_create: '產生摘要', summary_rollback: '回滾摘要', memory_delete: '刪除記憶',
   topic_create: '新話題', topic_switch: '切換話題', topic_rename: '話題改名',
   tool_call: '呼叫工具', tool_result: '工具結果', tool_toggle: '工具開關',
@@ -12,10 +12,49 @@ const ACTION_LABELS = {
   soul_bind: '綁定 Soul', soul_unbind: '解除 Soul 綁定', soul_reload: '重載 Soul',
   prompt_reload: '重載 Prompt', audit_purge: '清除稽核', config_update: '更新設定',
   llm_profile_upsert: '儲存模型設定', llm_profile_delete: '刪除模型設定', llm_route_set: '設定模型路由',
+  config_reset: '還原對話設定', llm_request: '模型請求',
 };
 
+const HISTORICAL_ACTIONS = ['fact_extract', 'guest_message_blocked', 'role_assign', 'role_revoke'];
 const ACTION_OPTIONS = [{ value: '', label: '全部動作' }]
-  .concat(Object.keys(ACTION_LABELS).map(k => ({ value: k, label: ACTION_LABELS[k] })));
+  .concat(Object.keys(ACTION_LABELS).map(k => ({ value: k, label: ACTION_LABELS[k], group: HISTORICAL_ACTIONS.includes(k) ? '歷史動作' : '現行動作' })));
+
+function MessageTrace({ metadata }) {
+  let trace;
+  try { trace = JSON.parse(metadata || '{}').trace_id; } catch { }
+  return trace && nyaCanRead('audit') ? <a href={'#audit?trace=' + encodeURIComponent(trace)}>本輪 trace</a> : null;
+}
+
+function TurnContext({ raw, traceId }) {
+  let detail;
+  try { detail = JSON.parse(raw || '{}'); } catch { detail = {}; }
+  const context = detail.context;
+  return <div style={{ padding: 14 }}>
+    {context && <div>實際注入：筆記 {context.facts}、摘要 {context.summaries}、近期訊息 {context.history}；估算 {context.estimated_tokens} tokens；{context.truncated ? '已截斷' : '未截斷'}</div>}
+    {detail.selection ? <details><summary>當輪保存的選取明細</summary><JsonBlock raw={JSON.stringify({ selection: detail.selection, execution: detail.execution })} /></details> : <div>此舊紀錄未保存注入明細。</div>}
+    {traceId && nyaCanRead('audit') && <a href={'#audit?trace=' + encodeURIComponent(traceId)}>查看本輪鏈 {traceId}</a>}
+  </div>;
+}
+
+function TraceView({ traceId }) {
+  const [logs, setLogs] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  useEffect(() => {
+    let active = true;
+    setLoading(true);
+    apiCall('GET', 'audit/traces/' + encodeURIComponent(traceId)).then(res => {
+      if (!active) return;
+      if (res.success) { setLogs(res.data.logs || []); setError(''); } else setError(res.message);
+      setLoading(false);
+    });
+    return () => { active = false; };
+  }, [traceId]);
+  return <Panel title="本輪稽核鏈" subtitle={traceId}>
+    {error && <div role="alert">{error}</div>}
+    <AuditLog logs={logs} loading={loading} showUser emptyMessage="此 trace 沒有保存紀錄" />
+  </Panel>;
+}
 
 const SOUL_REASON_LABELS = {
   bound: '使用綁定的 Soul', configured_default: '未綁定，使用設定的預設 Soul',
@@ -42,6 +81,11 @@ function detailSummary(raw) {
   try {
     const o = JSON.parse(raw);
     const parts = [];
+    if (o.message) parts.push(o.message);
+    if (o.tool_name) parts.push(o.tool_name);
+    if (o.output) parts.push('工具結果截斷預覽：' + o.output);
+    if (o.from_topic_id || o.to_topic_id) parts.push(`${o.from_topic_id || '—'} → ${o.to_topic_id || '—'}`);
+    if (o.context) parts.push(`筆記 ${o.context.facts}／摘要 ${o.context.summaries}／history ${o.context.history}；${o.context.estimated_tokens} tokens；${o.context.truncated ? '已截斷' : '未截斷'}`);
     if (o.reply_preview)   parts.push(o.reply_preview);
     if (o.content_preview) parts.push(o.content_preview);
     if (o.error)           parts.push(`錯誤：${o.error}`);
@@ -122,6 +166,8 @@ function AuditRow({ log, showUser, onUserClick, onDelete }) {
       {open && (
         <div style={{ padding: '0 14px 12px 39px', background: 'var(--c-bg)' }}>
           <div className="mono" style={{ fontSize: 11, color: 'var(--c-fg3)', padding: '8px 0 4px' }}>{log.log_id}</div>
+          {log.trace_id && <a href={'#audit?trace=' + encodeURIComponent(log.trace_id)}>本輪鏈：{log.trace_id}</a>}
+          {log.action === 'chat_input' && <TurnContext raw={log.detail_json} traceId={log.trace_id} />}
 
           {isToolResultErr && (
             <div style={{
@@ -169,7 +215,7 @@ function AuditRow({ log, showUser, onUserClick, onDelete }) {
 
           {onDelete && (
             <div style={{ display: 'flex', justifyContent: 'flex-end', paddingTop: 8 }}>
-              <Button variant="danger" size="sm" icon="trash" onClick={() => onDelete(log.log_id)}>刪除此筆</Button>
+              <Button write="super" variant="danger" size="sm" icon="trash" onClick={() => onDelete(log.log_id)}>刪除此筆</Button>
             </div>
           )}
         </div>
@@ -190,21 +236,23 @@ function AuditLog({ logs, loading, showUser, onUserClick, onDelete, emptyMessage
   );
 }
 
-function TabC6({ userId }) {
+function TabC6({ userId, initialTrace = '' }) {
   const [logs, setLogs]       = useState([]);
   const [total, setTotal]     = useState(0);
   const [writeFailures, setWriteFailures] = useState(null);
   const [loading, setLoading] = useState(false);
   const [action, setAction]   = useState('');
   const [keyword, setKeyword] = useState('');
+  const [result, setResult] = useState('');
   const [limit, setLimit]     = useState(50);
   const [offset, setOffset]   = useState(0);
   const [applied, setApplied] = useState({});
 
-  async function load(act, kw, lim, off) {
+  async function load(act, kw, lim, off, resultFilter = result) {
     setLoading(true);
     const filters = {};
     if (act) filters.action = act;
+    if (resultFilter) filters.result = resultFilter;
     if (kw && kw.trim()) filters.keyword = kw.trim();
     const res = await apiCall('GET', `users/${encodeURIComponent(userId)}/audit`, { ...filters, limit: lim, offset: off });
     if (res.success) { setLogs(res.data.logs); setTotal(res.data.total); setApplied(filters); setWriteFailures(res.data.write_failure_count); }
@@ -233,14 +281,16 @@ function TabC6({ userId }) {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', background: 'var(--c-bg)' }}>
+      {initialTrace && <ContentArea><TraceView traceId={initialTrace} /></ContentArea>}
       <Toolbar>
         <Input value={keyword} placeholder="關鍵字搜尋（內容 / action）" leftIcon="search"
           onChange={setKeyword} onKeyDown={e => e.key === 'Enter' && doQuery()} style={{ width: 260 }} />
         <Select value={action} options={ACTION_OPTIONS} onChange={v => { setAction(v); doQuery(v); }} style={{ width: 170 }} />
+        <Select value={result} options={[{ value: '', label: '全部結果' }, { value: 'success', label: '成功' }, { value: 'error', label: '錯誤' }, { value: 'skipped', label: '略過' }]} onChange={v => { setResult(v); setOffset(0); load(action, keyword, limit, 0, v); }} />
         <Button variant="ghost" size="sm" icon="refresh" onClick={() => doQuery()} loading={loading}>重新整理</Button>
         <div style={{ flex: 1 }} />
         <span className="mono" style={{ fontSize: 11, color: 'var(--c-fg3)' }}>{total} 筆</span>
-        <Button variant="danger" size="sm" icon="trash" onClick={handleClearUser} disabled={total === 0}>{filtered ? '清空符合條件' : '清空此用戶'}</Button>
+        <Button write="super" variant="danger" size="sm" icon="trash" onClick={handleClearUser} disabled={total === 0}>{filtered ? '清空符合條件' : '清空此用戶'}</Button>
       </Toolbar>
 
       <AuditWriteFailures count={writeFailures} />
@@ -256,19 +306,17 @@ function TabC6({ userId }) {
   );
 }
 
-function SoulBindPanel({ userId, currentSoulId, effectiveSoulId, soulReason, onSoulChanged }) {
+function SoulBindPanel({ userId, availableSouls, currentSoulId, effectiveSoulId, soulReason, onSoulChanged }) {
   const [souls, setSouls]        = useState([]);
   const [selected, setSelected]  = useState(currentSoulId || '');
   const [loading, setLoading]    = useState(false);
   const [applyLoading, setApply] = useState(false);
 
   useEffect(() => {
-    setLoading(true);
-    apiCall('GET', 'souls').then(res => {
-      if (res.success) { setSouls(res.data.souls); setSelected(s => s || (res.data.souls[0] || {}).id || ''); }
-      setLoading(false);
-    });
-  }, []);
+    setSouls(availableSouls);
+    setSelected(s => s || (availableSouls[0] || {}).id || '');
+    setLoading(false);
+  }, [availableSouls]);
   useEffect(() => { setSelected(currentSoulId || ''); }, [currentSoulId]);
 
   async function handleApply() {
@@ -291,7 +339,7 @@ function SoulBindPanel({ userId, currentSoulId, effectiveSoulId, soulReason, onS
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <span style={{ fontSize: 12, color: 'var(--c-fg2)', width: 52, flexShrink: 0 }}>綁定</span>
           <Badge color="var(--c-fg)" mono>{currentSoulId ?? '未綁定'}</Badge>
-          <Button variant="secondary" size="sm" loading={applyLoading} disabled={!currentSoulId} onClick={handleUnbind}>改回預設</Button>
+          <Button write="user" variant="secondary" size="sm" loading={applyLoading} disabled={!currentSoulId} onClick={handleUnbind}>改回預設</Button>
         </div>
         <div style={{ fontSize: 12, color: 'var(--c-fg2)' }}>生效：{effectiveSoulId} · {SOUL_REASON_LABELS[soulReason] || soulReason}</div>
         {loading
@@ -300,7 +348,7 @@ function SoulBindPanel({ userId, currentSoulId, effectiveSoulId, soulReason, onS
               <span style={{ fontSize: 12, color: 'var(--c-fg2)', width: 52, flexShrink: 0 }}>變更</span>
               <Select value={selected} options={souls.map(s => ({ value: s.id, label: `${s.display_name}（${s.id}）` }))}
                 onChange={setSelected} style={{ flex: 1 }} />
-              <Button variant="primary" size="sm" loading={applyLoading} onClick={handleApply}
+              <Button write="user" variant="primary" size="sm" loading={applyLoading} onClick={handleApply}
                 disabled={!selected || selected === currentSoulId}>套用</Button>
             </div>
         }

@@ -338,7 +338,7 @@ function DangerAction({ label, description, buttonLabel, onConfirm, loading }) {
         <div style={{ fontSize: 13, fontWeight: 500, color: 'var(--c-fg)', marginBottom: 2 }}>{label}</div>
         {description && <div style={{ fontSize: 12, color: 'var(--c-fg2)', lineHeight: 1.5 }}>{description}</div>}
       </div>
-      <Button variant="danger" size="sm" loading={loading} onClick={onConfirm}>{buttonLabel || label}</Button>
+      <Button write="user" variant="danger" size="sm" loading={loading} onClick={onConfirm}>{buttonLabel || label}</Button>
     </div>
   );
 }

@@ -145,6 +145,16 @@ public class NyaPromptBuilder
         }
         messages.Add(new NyaLlmMessage { Role = "user", Content = currentUserMessage });
 
+        report.Selection = new
+        {
+            topic_id = currentTopicId,
+            soul = new { id = soul.SoulId, definition = soul },
+            history = selectedHistory.Select(m => new { message_id = m.MessageId, sequence = m.Sequence, role = m.Role, content = m.Content }).ToArray(),
+            notes = selectedFacts.Select(f => new { fact_id = f.FactId, key = f.FactKey, version = f.Version, value = f.FactValue, source_text = f.SourceText, expires_at = f.ExpiresAt }).ToArray(),
+            summaries = selectedSummaries.Select(s => new { summary_id = s.SummaryId, version = s.Version, text = s.SummaryText }).ToArray(),
+            usable_tools = usableTools.Select(t => t.Name).ToArray(),
+            unavailable_tools = unavailableTools.Select(t => new { name = t.Schema.Name, reason = t.Reason }).ToArray()
+        };
         report.EstimatedTokens = estimator.Estimate(messages);
         return messages;
     }

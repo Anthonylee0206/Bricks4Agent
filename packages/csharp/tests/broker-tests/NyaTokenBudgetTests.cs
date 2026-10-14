@@ -114,6 +114,9 @@ public static class NyaTokenBudgetTests
         AssertTrue("mandatory-instruction-kept", system.Contains("請叫我老闆"));
         AssertTrue("mandatory-identity-kept", system.Contains("王小明"));
         AssertTrue("preferences-dropped", rep.FactsDropped > 0);
+        using var selected = System.Text.Json.JsonDocument.Parse(System.Text.Json.JsonSerializer.Serialize(rep.Selection));
+        AssertEqual("snapshot-matches-selected-note-count", rep.FactsIncluded, selected.RootElement.GetProperty("notes").GetArrayLength());
+        AssertTrue("snapshot-excludes-budget-dropped-notes", selected.RootElement.GetProperty("notes").GetArrayLength() < facts.Count);
         AssertTrue("mandatory-counted", rep.FactsIncluded >= 2);
     }
 
@@ -152,6 +155,10 @@ public static class NyaTokenBudgetTests
 
         AssertTrue("history-floor", rep.HistoryIncluded >= 2);
         AssertTrue("history-dropped-some", rep.HistoryDropped > 0);
+        using var selected = System.Text.Json.JsonDocument.Parse(System.Text.Json.JsonSerializer.Serialize(rep.Selection));
+        var savedHistory = selected.RootElement.GetProperty("history").EnumerateArray().ToArray();
+        AssertEqual("snapshot-matches-history-count", rep.HistoryIncluded, savedHistory.Length);
+        AssertTrue("snapshot-only-kept-recent-history", savedHistory.All(m => m.GetProperty("sequence").GetInt64() >= 10 - rep.HistoryIncluded));
         // 保留的是最近的（Sequence 8、9 應在最後幾則）
         var lastHistory = msgs[^2]; // [^1] = 當前 user 訊息
         AssertEqual("history-recent-kept", new string('話', 60), lastHistory.Content);

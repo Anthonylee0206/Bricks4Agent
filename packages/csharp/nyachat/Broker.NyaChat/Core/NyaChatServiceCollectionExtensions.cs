@@ -62,7 +62,8 @@ public static class NyaChatServiceCollectionExtensions
         services.AddSingleton(sp => new NyaLlmClient(
             sp.GetRequiredService<NyaLlmProfileStore>(),
             sp.GetServices<INyaLlmProvider>(),
-            sp.GetRequiredService<ILogger<NyaLlmClient>>()));
+            sp.GetRequiredService<ILogger<NyaLlmClient>>(),
+            sp.GetRequiredService<NyaAuditLogger>()));
 
         services.AddSingleton<NyaReplyPostProcessor>();
         services.AddSingleton<NyaFactExtractor>();

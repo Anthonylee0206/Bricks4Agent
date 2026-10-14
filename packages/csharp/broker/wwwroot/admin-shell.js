@@ -25,13 +25,13 @@
         { label: '總覽', href: NYA + '#home', icon: 'home', isDefault: true, keys: '首頁 狀態' },
       ] },
       { label: '營運', items: [
-        { label: '使用者', href: NYA + '#users', icon: 'users', alias: ['user'], keys: '記憶 訊息 事實 摘要 話題' },
+        { label: '使用者', href: NYA + '#users', icon: 'users', alias: ['user'], keys: '記憶 訊息 筆記 原話 到期 遺忘 聊天室 摘要 歷史搜尋' },
         { label: '稽核日誌', href: NYA + '#audit', icon: 'log', keys: '錯誤 紀錄 log' },
       ] },
       { label: '設定', items: [
         { label: '對話設定', href: NYA + '#settings', icon: 'list', keys: '對話 記憶 上下文 token 預算' },
         { label: 'Soul 人格', href: NYA + '#souls', icon: 'user', keys: 'soul 語氣 規則 prompt' },
-        { label: '工具', href: NYA + '#tools', icon: 'zap', keys: '工具 搜尋 交通 開關' },
+        { label: '工具', href: NYA + '#tools', icon: 'zap', keys: '工具 搜尋 交通 開關 search_history 舊對話搜尋' },
         { label: 'LLM 模型', href: NYA + '#llm', icon: 'cpu', keys: '模型 金鑰 api key provider 路由' },
       ] },
     ] },
@@ -232,6 +232,11 @@
       conn.dataset.state = 'up';
       conn.textContent = '已連線';
       const data = (await res.json()).data || {};
+      if (normPath(location.pathname) === normPath(NYA)) {
+        const previous = JSON.stringify(window.__nyaAuth || {});
+        window.__nyaAuth = data;
+        if (previous !== JSON.stringify(data)) window.dispatchEvent(new Event('nya-auth-changed'));
+      }
       accountName.textContent = data.authenticated ? (data.username || 'admin') : '未登入';
       logout.hidden = !data.authenticated;
     } catch {

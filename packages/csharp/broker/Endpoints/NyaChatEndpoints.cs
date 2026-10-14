@@ -97,6 +97,26 @@ public static class NyaChatEndpoints
             }));
         });
 
+        nya.MapGet("/tools/availability", (HttpContext ctx, NyaToolRegistry registry) =>
+        {
+            var userId = ctx.Request.Query["user_id"].ToString().Trim();
+            var channel = ctx.Request.Query["channel_type"].ToString().Trim();
+            if (string.IsNullOrWhiteSpace(userId) || string.IsNullOrWhiteSpace(channel))
+                return Results.BadRequest(ApiResponseHelper.Error("user_id 與 channel_type 為必填。"));
+            var usable = registry.GetUsableSchemas(userId, channel).Select(s => s.Name).ToHashSet();
+            var unavailable = registry.GetUnavailableSchemas(userId, channel).ToDictionary(t => t.Schema.Name, t => t.Reason);
+            return Results.Ok(ApiResponseHelper.Success(new
+            {
+                user_id = userId, channel_type = channel, usable_count = usable.Count,
+                tools = registry.GetAllWithStatus().Select(t => new
+                {
+                    id = t.Schema.Name, enabled = t.Enabled, usable = usable.Contains(t.Schema.Name),
+                    function_tool = usable.Contains(t.Schema.Name),
+                    reason = unavailable.GetValueOrDefault(t.Schema.Name), parameters = t.Schema.Parameters
+                })
+            }));
+        });
+
         nya.MapPost("/tools/{toolId}/toggle", (
             HttpContext ctx,
             LocalAdminAuthService auth,
@@ -311,6 +331,7 @@ public static class NyaChatEndpoints
             NyaMemoryService memoryService,
             NyaSoulProvider soulProvider,
             INyaConfigStore<NyaChatConfig> configStore,
+            NyaAuditLogger auditLogger,
             string userId) =>
         {
             if (!auth.TryRequireAuthenticated(ctx, out _, out var denied))
@@ -325,11 +346,18 @@ public static class NyaChatEndpoints
 
             var resolved = soulProvider.ResolveSoul(userId);
             var config = configStore.Current;
-            var recentHistory = memoryService.GetRecentMessages(userId, config.ShortTermMessageLimit,
-                includeSummarized: !config.AutoSummarizeEnabled);
+            var activeTopic = memoryService.GetActiveTopic(userId);
+            var recentHistory = activeTopic == null ? new List<NyaMessage>() : memoryService.GetRecentConversation(userId, activeTopic.TopicId,
+                config.ShortTermMessageLimit, includeSummarized: !config.AutoSummarizeEnabled);
+            var lastInput = auth.GetStatus(ctx).Permissions.Contains(LocalAdminPermissions.AuditRead)
+                ? auditLogger.GetLastChatInput(userId) : null;
             return Results.Ok(ApiResponseHelper.Success(new
             {
                 user_id  = ov.UserId,
+                active_topic = activeTopic == null ? null : new { id = activeTopic.TopicId, title = activeTopic.Title },
+                available_souls = soulProvider.ListSouls().Select(s => new { id = s.Id, display_name = s.DisplayName }),
+                forgotten_count = memoryService.GetForgotten(userId).Count,
+                last_turn = lastInput == null ? null : new { trace_id = lastInput.TraceId, created_at = lastInput.CreatedAt, detail_json = lastInput.DetailJson },
                 auto_summarize_enabled = config.AutoSummarizeEnabled,
                 short_term_message_limit = config.ShortTermMessageLimit,
                 soul_id  = resolved.Soul.SoulId,
@@ -649,8 +677,10 @@ public static class NyaChatEndpoints
             // 大項#5：可選話題篩選。
             var topicId = ctx.Request.Query["topic_id"].ToString();
             if (string.IsNullOrWhiteSpace(topicId)) topicId = null;
-            var messages = memoryService.GetAllMessages(userId, limit, offset, topicId);
-            var total = memoryService.CountAllMessages(userId, topicId);
+            var unassigned = bool.TryParse(ctx.Request.Query["unassigned"], out var onlyUnassigned) && onlyUnassigned;
+            var messages = memoryService.GetAllMessages(userId, limit, offset, topicId, unassigned);
+            var total = memoryService.CountAllMessages(userId, topicId, unassigned);
+            var diagnostics = memoryService.DiagnoseMessages(userId, messages);
 
             return Results.Ok(ApiResponseHelper.Success(new
             {
@@ -659,6 +689,7 @@ public static class NyaChatEndpoints
                 limit,
                 offset,
                 topic_id = topicId,
+                external_conversations = memoryService.GetExternalConversationIds(userId),
                 messages = messages.Select(m => new
                 {
                     message_id      = m.MessageId,
@@ -668,6 +699,8 @@ public static class NyaChatEndpoints
                     topic_id        = m.TopicId,
                     is_deleted      = m.IsDeleted,
                     is_summarized   = m.IsSummarized,
+                    metadata_json   = m.MetadataJson,
+                    exclusion_reasons = diagnostics[m.MessageId],
                     created_at      = m.CreatedAt
                 })
             }));
@@ -975,6 +1008,8 @@ public static class NyaChatEndpoints
                 {
                     fact_key = f.FactKey,
                     fact_value = f.FactValue,
+                    match_terms = NyaMemoryService.GetForgottenMatchTerms(f),
+                    through_sequence = f.ThroughSequence,
                     created_at = f.CreatedAt
                 })
             }));
@@ -997,6 +1032,15 @@ public static class NyaChatEndpoints
 
             auditLogger.LogMemoryDelete(userId, "forgotten", factKey);
             return Results.Ok(ApiResponseHelper.Success(new { user_id = userId, fact_key = factKey, deleted }));
+        });
+
+        nya.MapPost("/users/{userId}/facts/{factKey}/forget", (NyaMemoryService memoryService,
+            NyaAuditLogger auditLogger, string userId, string factKey) =>
+        {
+            if (!memoryService.ForgetFact(userId, factKey, coversPendingTurn: false))
+                return Results.NotFound(ApiResponseHelper.Error("Note not found.", 404));
+            auditLogger.LogMemoryDelete(userId, "note_forget", factKey);
+            return Results.Ok(ApiResponseHelper.Success(new { user_id = userId, fact_key = factKey, forgotten = true }));
         });
 
         nya.MapPost("/users/{userId}/facts/{factKey}/rollback", (
@@ -1210,6 +1254,17 @@ public static class NyaChatEndpoints
         });
 
         // ── 審計日誌 ────────────────────────────────────────────────────────
+        nya.MapGet("/audit/traces/{traceId}", (NyaAuditLogger auditLogger, string traceId) =>
+            Results.Ok(ApiResponseHelper.Success(new
+            {
+                trace_id = traceId,
+                logs = auditLogger.GetByTraceId(traceId).Select(lg => new
+                {
+                    user_id = lg.UserId, log_id = lg.LogId, trace_id = lg.TraceId,
+                    action = lg.Action, result = lg.Result, detail_json = lg.DetailJson, created_at = lg.CreatedAt
+                })
+            })));
+
         nya.MapGet("/users/{userId}/audit", (
             HttpContext ctx,
             LocalAdminAuthService auth,
@@ -1244,6 +1299,7 @@ public static class NyaChatEndpoints
                 logs = logs.Select(lg => new
                 {
                     log_id      = lg.LogId,
+                    trace_id    = lg.TraceId,
                     action      = lg.Action,
                     result      = lg.Result,
                     detail_json = lg.DetailJson,
@@ -1288,6 +1344,7 @@ public static class NyaChatEndpoints
                 {
                     user_id     = lg.UserId,
                     log_id      = lg.LogId,
+                    trace_id    = lg.TraceId,
                     action      = lg.Action,
                     result      = lg.Result,
                     detail_json = lg.DetailJson,
@@ -1527,7 +1584,7 @@ public static class NyaChatEndpoints
             return ok ? Results.Ok(ApiResponseHelper.Success(new { deleted = id })) : Results.NotFound(ApiResponseHelper.Error("not found", 404));
         });
 
-        nya.MapGet("/llm/routes", (HttpContext ctx, LocalAdminAuthService auth, NyaLlmProfileStore store) =>
+        nya.MapGet("/llm/routes", (HttpContext ctx, LocalAdminAuthService auth, NyaLlmProfileStore store, INyaConfigStore<NyaChatConfig> configStore) =>
         {
             if (!auth.TryRequireAuthenticated(ctx, out _, out var denied)) return denied;
             var routes = store.ListRoutes();
@@ -1539,6 +1596,7 @@ public static class NyaChatEndpoints
                 return new
                 {
                     call_site_id = cs, profile_id = direct?.ProfileId,
+                    execution_enabled = cs == NyaLlmTasks.Chat || (cs == NyaLlmTasks.Summarization && configStore.Current.AutoSummarizeEnabled),
                     effective_profile_id = profile?.ProfileId, provider = profile?.Provider, model = profile?.Model,
                     source = direct == null ? NyaLlmProfileStore.DefaultCallSite : cs
                 };
@@ -1595,13 +1653,15 @@ public static class NyaChatEndpoints
 
         if (verb == HttpMethods.Get)
         {
-            if (segments is ["audit"] or ["users", _, "audit"])
+            if (segments is ["audit"] or ["audit", "traces", _] or ["users", _, "audit"])
                 permissions = new[] { LocalAdminPermissions.AuditRead };
             else if (segments is ["users"] or
                      ["users", _, "overview" or "messages" or "topics" or "facts" or "summaries" or "forgotten"] or
                      ["users", _, "messages", _] or
                      ["users", _, "facts", _, "history"])
                 permissions = new[] { LocalAdminPermissions.PermissionUserManage, LocalAdminPermissions.AuditRead };
+            else if (segments is ["tools", "availability"])
+                permissions = new[] { LocalAdminPermissions.SystemStatusRead, LocalAdminPermissions.AuditRead, LocalAdminPermissions.PermissionUserManage };
             else if (segments is ["status" or "config" or "prompts" or "tools" or "souls"] or ["souls", _] or ["config", "effective"])
                 permissions = new[] { LocalAdminPermissions.SystemStatusRead, LocalAdminPermissions.AuditRead };
             else if (segments is ["llm", "param-catalog" or "templates" or "call-sites" or "profiles" or "routes"] or ["llm", "profiles", _, "effective"])
@@ -1619,7 +1679,7 @@ public static class NyaChatEndpoints
                  ((verb is "POST" or "PUT" or "DELETE") && segments is
                      ["users", _, "facts" or "messages" or "topics" or "summaries" or "soul"] or
                      ["users", _, "facts" or "messages" or "topics", _] or
-                     ["users", _, "facts", _, "rollback"] or
+                     ["users", _, "facts", _, "rollback" or "forget"] or
                      ["users", _, "topics", _, "switch" or "rename"] or
                      ["users", _, "summaries", "trigger"] or
                      ["users", _, "summaries", _, "rollback"]))

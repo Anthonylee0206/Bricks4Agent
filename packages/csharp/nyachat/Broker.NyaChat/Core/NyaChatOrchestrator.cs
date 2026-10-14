@@ -113,6 +113,7 @@ public class NyaChatOrchestrator : Abstractions.INyaChatOrchestrator
             return ErrorResult("使用者識別與訊息內容不可為空。", "empty_input");
 
         var sw = Stopwatch.StartNew();
+        var traceId = BrokerCore.IdGen.New("nyat");
 
         try
         {
@@ -122,7 +123,6 @@ public class NyaChatOrchestrator : Abstractions.INyaChatOrchestrator
                 : _memoryService.GetOrCreateActiveTopic(userId);
 
             // Phase 4-A：本輪全鏈路關聯 ID。串進所有稽核項與工具 context，使「對話→工具→審批」可反查。
-            var traceId = BrokerCore.IdGen.New("nyat");
 
             // ── 1.5 字面指令攔截（大項#4）：命中則短路，不進 LLM、不寫入歷史 ──
             var command = _preChatCommand.Handle(new Abstractions.NyaPreChatCommandContext
@@ -147,11 +147,8 @@ public class NyaChatOrchestrator : Abstractions.INyaChatOrchestrator
             var activeSummaries  = autoSummarize
                 ? _memoryService.GetActiveSummaries(userId, topicId)
                 : new List<NyaSummary>();
-            var conversationScope = string.IsNullOrWhiteSpace(conversationId) || _memoryService.IsUserTopic(userId, conversationId)
-                ? null
-                : conversationId;
             var recentMessages   = _memoryService.GetRecentConversation(
-                userId, conversationScope, _config.ShortTermMessageLimit, includeSummarized: !autoSummarize);
+                userId, topicId, _config.ShortTermMessageLimit, includeSummarized: !autoSummarize);
             // 當前訊息尚未持久化，recentMessages 本就不含它，無需再過濾。
             var historyMessages  = recentMessages;
 
@@ -184,7 +181,17 @@ public class NyaChatOrchestrator : Abstractions.INyaChatOrchestrator
             // ── 6. 記錄輸入（含 token 估算與截斷統計，大項三 3H）──────────────
             _auditLogger.LogChatInput(userId, message, chatProfile.Model,
                 budgetReport.FactsIncluded, budgetReport.SummariesIncluded, budgetReport.HistoryIncluded,
-                llmMessages.Count, budgetReport.EstimatedTokens, maxContext, budgetReport.Truncated, traceId: traceId);
+                llmMessages.Count, budgetReport.EstimatedTokens, maxContext, budgetReport.Truncated, traceId: traceId,
+                selection: budgetReport.Selection,
+                execution: new
+                {
+                    channel_type = channelType, conversation_id = conversationId,
+                    auto_summarize_enabled = autoSummarize,
+                    profile = new { id = chatProfile.ProfileId, provider = chatProfile.Provider, model = chatProfile.Model },
+                    input_token_budget = inputBudget, output_reserve = outputReserve,
+                    function_tools = tools.Select(t => t.Function.Name).ToArray(),
+                    initial_messages = llmMessages.Select(m => new { role = m.Role, content = m.Content }).ToArray()
+                });
 
             if (budgetReport.MandatoryOverflow)
                 _logger.LogWarning(
@@ -194,6 +201,7 @@ public class NyaChatOrchestrator : Abstractions.INyaChatOrchestrator
             // ── 7. 建構工具清單（啟用 ∩ 授權）並呼叫 LLM ───────────────────────
             var request = new NyaLlmRequest
             {
+                AuditTraceId = traceId, AuditUserId = userId,
                 // Model 與取樣（Temperature/TopP）由 chat profile 決定，facade 會對齊；此處僅組訊息與工具。
                 Messages  = llmMessages,
                 Tools     = tools.Count > 0 ? tools : null,
@@ -296,6 +304,7 @@ public class NyaChatOrchestrator : Abstractions.INyaChatOrchestrator
                     var allowMoreTools = toolRound < Math.Max(1, _config.MaxToolRounds);
                     var followUp = new NyaLlmRequest
                     {
+                        AuditTraceId = traceId, AuditUserId = userId,
                         Messages  = llmMessages,
                         Tools     = allowMoreTools && tools.Count > 0 ? tools : null,
                         MaxTokens = outputReserve
@@ -343,6 +352,7 @@ public class NyaChatOrchestrator : Abstractions.INyaChatOrchestrator
                 directReplies = null;
                 llmResponse = await _llmClient.ChatAsync(new NyaLlmRequest
                 {
+                    AuditTraceId = traceId, AuditUserId = userId,
                     Messages = llmMessages,
                     Tools = tools.Count > 0 ? tools : null,
                     MaxTokens = outputReserve
@@ -367,13 +377,14 @@ public class NyaChatOrchestrator : Abstractions.INyaChatOrchestrator
             // ── 10. 寫入對話紀錄（延後落地）──────────────────────────────────
             // 至此 LLM 已成功回應；先補寫使用者訊息，再寫助理回覆，維持正確順序。
             // 失敗路徑（步驟 7 回 null、例外）不會走到這裡，因此該輪完全不落地。
-            _memoryService.AppendMessage(userId, "user", message, topicId);
+            _memoryService.AppendMessage(userId, "user", message, topicId, JsonSerializer.Serialize(new { trace_id = traceId }));
             _memoryService.AppendMessage(
                 userId, "assistant", primaryReply,
                 topicId,
                 System.Text.Json.JsonSerializer.Serialize(new
                 {
                     model       = chatProfile.Model,
+                    trace_id    = traceId,
                     provider    = chatProfile.Provider,
                     latency_ms  = sw.ElapsedMilliseconds
                 }));
@@ -402,13 +413,13 @@ public class NyaChatOrchestrator : Abstractions.INyaChatOrchestrator
         }
         catch (OperationCanceledException)
         {
-            _auditLogger.LogError(userId, "chat", "Request cancelled");
+            _auditLogger.LogError(userId, "chat", "Request cancelled", traceId: traceId);
             return ErrorResult("抱歉，請求逾時，請稍後再試。", "timeout");
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "[NyaChat] Unexpected error for user {User}", userId);
-            _auditLogger.LogError(userId, "chat", ex.Message);
+            _auditLogger.LogError(userId, "chat", ex.Message, traceId: traceId);
             return ErrorResult("處理對話時發生錯誤，請稍後再試。", ex.Message);
         }
     }

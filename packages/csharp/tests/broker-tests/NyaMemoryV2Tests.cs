@@ -36,13 +36,17 @@ public static class NyaMemoryV2Tests
 
     private static void TestHistorySurvivesNewTopic()
     {
-        Console.WriteLine("--- new topic does not erase the previous line ---");
+        Console.WriteLine("--- topics are separate chat rooms ---");
         using var f = new Fixture();
         f.Chat("我剛剛說我要去洗車");
         var memory = f.Memory;
+        var first = memory.GetOrCreateActiveTopic(f.UserId);
         memory.CreateNewTopic(f.UserId, "新話題");
         f.Chat("上一句話是什麼？");
-        AssertTrue("prior-line-in-history", f.Llm.LastMessages.Any(m => m.Role == "user" && m.Content.Contains("洗車")));
+        AssertTrue("new-room-starts-empty", !f.Llm.LastMessages.Any(m => m.Role == "user" && m.Content.Contains("洗車")));
+        memory.SwitchTopic(f.UserId, first);
+        f.Chat("我們剛剛聊到哪？");
+        AssertTrue("switch-back-restores-room", f.Llm.LastMessages.Any(m => m.Role == "user" && m.Content.Contains("洗車")));
     }
 
     private static void TestExplicitConversationStaysIsolated()

@@ -1,9 +1,9 @@
 const { useState, useEffect } = React;
 
-function PageD({ onNavigate, initialResult = '' }) {
+function PageD({ onNavigate, initialResult = '', initialTrace = '', initialKeyword = '' }) {
   const [userId, setUserId]   = useState('');
   const [action, setAction]   = useState('');
-  const [keyword, setKeyword] = useState('');
+  const [keyword, setKeyword] = useState(initialKeyword);
   const [result, setResult]   = useState(initialResult);
   const [logs, setLogs]       = useState([]);
   const [total, setTotal]     = useState(0);
@@ -13,7 +13,7 @@ function PageD({ onNavigate, initialResult = '' }) {
   const [offset, setOffset]   = useState(0);
   const [applied, setApplied] = useState({});
 
-  useEffect(() => { doQuery('', '', '', 50, 0, initialResult); }, []);
+  useEffect(() => { doQuery('', '', initialKeyword, 50, 0, initialResult); }, []);
 
   async function doQuery(uid, act, kw, lim, off, res_) {
     const id  = uid  !== undefined ? uid  : userId;
@@ -53,6 +53,7 @@ function PageD({ onNavigate, initialResult = '' }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
       <PageHeader title="稽核日誌" count={total} desc="所有使用者的對話、工具呼叫與記憶變更紀錄" />
+      {initialTrace && <ContentArea><TraceView traceId={initialTrace} /></ContentArea>}
 
       <Toolbar>
         <Input value={keyword} placeholder="關鍵字搜尋（內容 / action / user）" leftIcon="search"
@@ -60,10 +61,10 @@ function PageD({ onNavigate, initialResult = '' }) {
         <Input value={userId} placeholder="User ID（選填）" mono
           onChange={setUserId} onKeyDown={e => e.key === 'Enter' && (setOffset(0), doQuery(userId, action, keyword, limit, 0))} style={{ width: 240 }} />
         <Select value={action} options={ACTION_OPTIONS} onChange={setAction} style={{ width: 170 }} />
-        <Select value={result} options={[{ value: '', label: '全部結果' }, { value: 'error', label: '只看錯誤' }]} onChange={v => { setResult(v); setOffset(0); doQuery(userId, action, keyword, limit, 0, v); }} style={{ width: 120 }} />
+        <Select value={result} options={[{ value: '', label: '全部結果' }, { value: 'success', label: '成功' }, { value: 'error', label: '錯誤' }, { value: 'skipped', label: '略過' }]} onChange={v => { setResult(v); setOffset(0); doQuery(userId, action, keyword, limit, 0, v); }} style={{ width: 120 }} />
         <Button variant="secondary" size="sm" onClick={() => { setOffset(0); doQuery(userId, action, keyword, limit, 0); }} loading={loading}>查詢</Button>
         <div style={{ flex: 1 }} />
-        <Button variant="danger" size="sm" icon="trash" onClick={handleClearAll} disabled={total === 0}>{filtered ? '清空符合條件' : '清空全部'}</Button>
+        <Button write="super" variant="danger" size="sm" icon="trash" onClick={handleClearAll} disabled={total === 0}>{filtered ? '清空符合條件' : '清空全部'}</Button>
       </Toolbar>
 
       <AuditWriteFailures count={writeFailures} />

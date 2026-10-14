@@ -10,6 +10,7 @@ namespace Broker.NyaChat;
 /// </summary>
 public sealed class NyaLlmProfile
 {
+    public string ProfileId { get; set; } = "";
     /// <summary>"ollama" | "openai_chat" | "openai_responses"，對應已註冊 <c>INyaLlmProvider.Key</c>。</summary>
     public string Provider { get; set; } = "ollama";
 

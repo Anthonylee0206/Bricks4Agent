@@ -57,16 +57,8 @@ public sealed class NyaChatConfigStore : INyaConfigStore<NyaChatConfig>
                 {
                     key = spec.Key, label = spec.Label, type = spec.Type, min = spec.Min, max = spec.Max,
                     description = spec.Description, value = values[spec.Key]?.DeepClone(),
-                    default_value = defaults[spec.Key]?.DeepClone(),
-                    source = _overrides.ContainsKey(spec.Key) ? "後台設定" : "appsettings 預設",
-                    applies_immediately = true, editable = true
-                }).ToArray(),
-                read_only = new[]
-                {
-                    new { key = "DbPath", value = (object)_seed.DbPath, explanation = "資料庫路徑在啟動時固定，修改 appsettings 後重啟。" },
-                    new { key = "TokenEstimatorCjkPerChar", value = (object)_seed.TokenEstimatorCjkPerChar, explanation = "token 估算係數在啟動時固定，修改 appsettings 後重啟。" },
-                    new { key = "TokenEstimatorLatinPerChar", value = (object)_seed.TokenEstimatorLatinPerChar, explanation = "token 估算係數在啟動時固定，修改 appsettings 後重啟。" }
-                }
+                    default_value = defaults[spec.Key]?.DeepClone()
+                }).ToArray()
             };
         }
     }
@@ -96,13 +88,16 @@ public sealed class NyaChatConfigStore : INyaConfigStore<NyaChatConfig>
         lock (_gate)
         {
             ct.ThrowIfCancellationRequested();
+            var retained = (JsonObject)_overrides.DeepClone();
+            var changed = NyaChatHotSettings.All.Select(s => s.Key).Where(k => retained.Remove(k)).ToArray();
             _db.InTransaction(() =>
             {
-                _db.Delete<NyaConfigEntry>(ConfigKey);
-                Audit("config_reset", _overrides.Select(p => p.Key).ToArray(), username, role);
+                if (retained.Count == 0) _db.Delete<NyaConfigEntry>(ConfigKey);
+                else Persist(retained);
+                Audit("config_reset", changed, username, role);
             });
-            _overrides = new();
-            _current = Clone(_seed);
+            _overrides = retained;
+            _current = ApplyOverrides(retained);
             return Task.CompletedTask;
         }
     }

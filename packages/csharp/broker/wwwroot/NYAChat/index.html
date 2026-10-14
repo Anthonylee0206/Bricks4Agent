@@ -73,75 +73,29 @@
   </style>
 
   <script>
-    (function () {
-      window.MOCK_MODE = false;
-
-      window.__nyaReady = new Promise(async function (resolve) {
-        const STATUS_URL = '/api/v1/local-admin/nya/status';
-        const TIMEOUT_MS = 5000;
-
-        function showError(html) {
-          if (document.readyState === 'loading') {
-            document.addEventListener('DOMContentLoaded', function () { showError(html); }, { once: true });
-            return;
-          }
-          var root = document.getElementById('root');
-          if (root) {
-            root.innerHTML =
-              '<div style="display:flex;align-items:center;justify-content:center;height:100%;background:var(--c-bg);">' +
-              '<div style="width:min(420px,calc(100vw - 32px));padding:24px;background:var(--c-surface);' +
-              'border:1px solid var(--c-fg);">' +
-              '<h2 style="color:var(--c-fg);font-size:16px;font-weight:600;margin-bottom:8px;">無法開啟 NyaChat 管理</h2>' +
-              '<p style="color:var(--c-fg2);line-height:1.6;font-size:13px;margin-bottom:20px;">' + html + '</p>' +
-              '<div style="display:flex;gap:8px;">' +
-              '<a href="/line-admin.html" style="display:inline-flex;align-items:center;height:32px;padding:0 14px;' +
-              'background:var(--c-accent);color:#fff;border-radius:4px;text-decoration:none;font-size:13px;font-weight:500;">前往登入</a>' +
-              '<button onclick="location.reload()" style="height:32px;padding:0 14px;background:var(--c-surface);' +
-              'color:var(--c-fg);border:1px solid var(--c-fg);border-radius:4px;cursor:pointer;font-size:13px;font-weight:500;">重新整理</button>' +
-              '</div></div></div>';
-          }
+    window.MOCK_MODE = false;
+    window.__nyaReady = (async function () {
+      const ctl = new AbortController();
+      const timeout = setTimeout(() => ctl.abort(), 5000);
+      try {
+        const res = await fetch('/api/v1/local-admin/status', { credentials: 'include', signal: ctl.signal });
+        const json = await res.json();
+        if (!res.ok || !json.success || !json.data?.authenticated) {
+          location.replace('/line-admin.html');
+          return new Promise(() => {});
         }
-
-        try {
-          var ctl = new AbortController();
-          var tid = setTimeout(function () { ctl.abort(); }, TIMEOUT_MS);
-          var res = await fetch(STATUS_URL, {
-            method: 'GET',
-            credentials: 'include',
-            signal: ctl.signal,
-          });
-          clearTimeout(tid);
-
-          if (res.status === 200) {
-            try {
-              var json = await res.json();
-              if (json && json.success === true) {
-                console.info('[NyaChat] 後端連線成功');
-                resolve();
-                return;
-              }
-            } catch (_) { }
-            showError('後端回傳 200 但格式不符，可能版本不相容。');
-            return;
-          }
-
-          if (res.status === 403) {
-            showError('拒絕連線');
-          } else if (res.status === 401) {
-            showError(
-              '尚未登入或 Session 已過期。<br>' +
-              '請先完成登入後，再重新整理。'
-            );
-          } else {
-            showError('後端回傳非預期狀態碼：HTTP ' + res.status);
-          }
-        } catch (err) {
-          var reason = err.name === 'AbortError'
-            ? '連線逾時（' + (TIMEOUT_MS / 1000) + ' 秒）'
-            : err.message;
-          showError('無法連線至後端伺服器。<br>原因：' + reason + '<br><br>請確認 Broker 服務已啟動，且使用 localhost / 127.0.0.1 存取。');
-        }
-      });
+        window.__nyaAuth = json.data;
+      } catch {
+        if (document.readyState === 'loading') await new Promise(resolve => document.addEventListener('DOMContentLoaded', resolve, { once: true }));
+        const root = document.getElementById('root');
+        const title = document.createElement('h2');
+        title.textContent = '無法連線至 Broker';
+        const link = document.createElement('a');
+        link.href = '/line-admin.html';
+        link.textContent = '前往登入';
+        root.replaceChildren(title, link);
+        return new Promise(() => {});
+      } finally { clearTimeout(timeout); }
     })();
   </script>
 

@@ -23,14 +23,16 @@ public class NyaLlmClient
     private readonly NyaLlmProfileStore _store;
     private readonly IReadOnlyDictionary<string, INyaLlmProvider> _providers;
     private readonly ILogger<NyaLlmClient> _logger;
+    private readonly NyaAuditLogger? _auditLogger;
 
     public NyaLlmClient(
         NyaLlmProfileStore store,
         IEnumerable<INyaLlmProvider> providers,
-        ILogger<NyaLlmClient> logger)
+        ILogger<NyaLlmClient> logger, NyaAuditLogger? auditLogger = null)
     {
         _store = store;
         _logger = logger;
+        _auditLogger = auditLogger;
 
         var map = new Dictionary<string, INyaLlmProvider>(StringComparer.OrdinalIgnoreCase);
         foreach (var p in providers)
@@ -120,6 +122,8 @@ public class NyaLlmClient
                 task, provider.Key, request.Tools.Count);
         }
 
+        if (!string.IsNullOrWhiteSpace(request.AuditUserId) && !string.IsNullOrWhiteSpace(request.AuditTraceId))
+            _auditLogger?.LogLlmRequest(request.AuditUserId, request.AuditTraceId, task, provider.Key, profile, request);
         return provider.SendAsync(new NyaLlmProviderRequest { Profile = profile, Request = request }, ct);
     }
 }

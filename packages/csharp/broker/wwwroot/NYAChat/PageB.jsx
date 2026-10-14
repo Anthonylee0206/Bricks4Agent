@@ -34,7 +34,7 @@ function PageB({ onNavigate, initialKeyword = '' }) {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', flex: 1, overflow: 'hidden' }}>
-      <PageHeader title="使用者" count={total} desc="與 NyaChat 對話過的使用者；點選一列查看訊息、話題、事實與摘要">
+      <PageHeader title="使用者" count={total} desc="有訊息、筆記、聊天室、Soul 綁定或遺忘紀錄的使用者；點選一列查看訊息、話題、筆記與摘要">
         <Button variant="secondary" size="sm" icon="refresh" loading={loading}
           onClick={() => load(keyword, limit, offset)}>重新整理</Button>
       </PageHeader>
@@ -61,7 +61,7 @@ function PageB({ onNavigate, initialKeyword = '' }) {
           { label: '使用者 ID' },
           { label: '通道',     width: 100 },
           { label: '訊息',     width: 90, right: true },
-          { label: '有效事實', width: 90, right: true },
+          { label: '未過期筆記', width: 90, right: true },
           { label: '最後訊息', width: 160 },
           { label: 'Soul',     width: 140 },
           { label: '',         width: 40 },

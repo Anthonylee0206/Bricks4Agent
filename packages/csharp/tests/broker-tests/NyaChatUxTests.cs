@@ -25,6 +25,7 @@ public static class NyaChatUxTests
         TestLedgerAcrossRounds();
         TestDirectReplies();
         TestCompleteHistory();
+        TestTurnTrace();
         Console.WriteLine($"=== NyaChat UX Results: {_passed} passed, {_failed} failed ===");
         return (_passed, _failed);
     }
@@ -235,6 +236,36 @@ public static class NyaChatUxTests
         AssertTrue("summary-context-has-tail", f.Provider.Messages[2].Any(m => m.Content.Contains("最後一段資料")));
     }
 
+    private static void TestTurnTrace()
+    {
+        using var f = new Fixture(new[] { Calls(Call("trace_tool")), Reply("這是工具結果。") },
+            new[] { new Plugin("trace_tool", NyaToolResult.Ok("a result")), new Plugin("off_tool", NyaToolResult.Ok("hidden"), enabled: false), new Plugin("denied_tool", NyaToolResult.Ok("hidden")) }, deny: "denied_tool");
+        var room = f.Memory.CreateNewTopic(Fixture.UserId, "Trace room");
+        var old = f.Memory.AppendMessage(Fixture.UserId, "user", "old room input", room.TopicId);
+        f.Memory.AppendMessage(Fixture.UserId, "assistant", "old room output", room.TopicId);
+        f.Memory.UpsertFact(Fixture.UserId, "identity", "nickname", "Alice");
+        f.Memory.CreateSummary(Fixture.UserId, room.TopicId, "disabled summary", 1, 2, 2);
+        var result = f.Chat();
+        var persisted = f.History(result).TakeLast(2).ToList();
+        var traceIds = persisted.Select(m => System.Text.Json.JsonDocument.Parse(m.MetadataJson!).RootElement.GetProperty("trace_id").GetString()).ToArray();
+        AssertTrue("trace-both-messages", traceIds.Length == 2 && !string.IsNullOrWhiteSpace(traceIds[0]) && traceIds[0] == traceIds[1]);
+        var chain = f.Audit.GetByTraceId(traceIds[0]!);
+        AssertTrue("trace-input-tools-output", new[] { "chat_input", "tool_call", "tool_result", "chat_output" }.All(a => chain.Any(l => l.Action == a)));
+        AssertEqual("trace-each-model-request", 2, chain.Count(l => l.Action == "llm_request"));
+        var input = chain.Single(l => l.Action == "chat_input");
+        using var json = System.Text.Json.JsonDocument.Parse(input.DetailJson);
+        var selection = json.RootElement.GetProperty("selection");
+        AssertEqual("trace-room-saved", room.TopicId, selection.GetProperty("topic_id").GetString());
+        AssertTrue("trace-history-id-saved", selection.GetProperty("history").EnumerateArray().Any(m => m.GetProperty("message_id").GetString() == old.MessageId));
+        AssertTrue("trace-note-version-and-content", selection.GetProperty("notes").EnumerateArray().Any(n => n.GetProperty("key").GetString() == "nickname" && n.GetProperty("version").GetInt32() == 1 && n.GetProperty("value").GetString() == "Alice"));
+        AssertEqual("trace-disabled-summaries-empty", 0, selection.GetProperty("summaries").GetArrayLength());
+        AssertTrue("trace-unavailable-reasons", selection.GetProperty("unavailable_tools").EnumerateArray().Any(t => t.GetProperty("name").GetString() == "off_tool" && t.GetProperty("reason").GetString() == "disabled") && selection.GetProperty("unavailable_tools").EnumerateArray().Any(t => t.GetProperty("name").GetString() == "denied_tool" && t.GetProperty("reason").GetString() == "not_authorized"));
+        AssertEqual("trace-profile-saved", "chat", json.RootElement.GetProperty("execution").GetProperty("profile").GetProperty("id").GetString());
+        f.Memory.UpsertFact(Fixture.UserId, "identity", "nickname", "Bob");
+        f.Memory.DeleteAllMessages(Fixture.UserId);
+        AssertEqual("trace-snapshot-survives-memory-changes", input.DetailJson, f.Audit.GetByTraceId(traceIds[0]!).Single(l => l.Action == "chat_input").DetailJson);
+    }
+
     private static NyaLlmResponse Reply(string text) => new() { Content = text };
     private static NyaToolCall Call(string name, string args = "{}") => new() { Id = Guid.NewGuid().ToString("N"), FunctionName = name, FunctionArguments = args };
     private static NyaLlmResponse Calls(params NyaToolCall[] calls) => new() { ToolCalls = calls.ToList() };
@@ -247,6 +278,7 @@ public static class NyaChatUxTests
         private readonly ServiceProvider _services;
         public ScriptedProvider Provider { get; }
         public NyaMemoryService Memory => _services.GetRequiredService<NyaMemoryService>();
+        public NyaAuditLogger Audit => _services.GetRequiredService<NyaAuditLogger>();
 
         public Fixture(IEnumerable<NyaLlmResponse?> responses, IEnumerable<Plugin>? plugins = null, string? deny = null, int maxReplyLength = 2000, int maxToolRounds = 3)
         {

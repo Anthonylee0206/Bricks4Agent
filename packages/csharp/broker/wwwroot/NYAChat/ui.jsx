@@ -58,7 +58,7 @@ function Icon({ name, size = 16, stroke = 1.5, color, style }) {
   );
 }
 
-function Button({ variant = 'secondary', size = 'md', icon, iconRight, loading, children, style, ...rest }) {
+function Button({ variant = 'secondary', size = 'md', icon, iconRight, loading, children, style, write, ...rest }) {
   const h = size === 'sm' ? 28 : size === 'lg' ? 38 : 32;
   const px = size === 'sm' ? 10 : size === 'lg' ? 16 : 13;
   const fs = size === 'sm' ? 12 : 13;
@@ -71,7 +71,7 @@ function Button({ variant = 'secondary', size = 'md', icon, iconRight, loading, 
   };
   const v = variants[variant] || variants.secondary;
   const [hover, setHover] = useState(false);
-  const isDisabled = rest.disabled || loading;
+  const isDisabled = rest.disabled || loading || (write && !nyaCanWrite(write));
   return (
     <button
       onMouseEnter={() => !isDisabled && setHover(true)}
@@ -89,6 +89,7 @@ function Button({ variant = 'secondary', size = 'md', icon, iconRight, loading, 
         ...style
       }}
       {...rest}
+      title={write && !nyaCanWrite(write) ? '目前帳號沒有此操作權限' : rest.title}
       disabled={isDisabled}
     >
       {loading
@@ -218,28 +219,11 @@ function Select({ value, onChange, options, style, disabled }) {
           fontSize: 13, color: 'var(--c-fg)',
           appearance: 'none', cursor: disabled ? 'not-allowed' : 'pointer', outline: 'none',
         }}>
-        {normalized.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+        {normalized.filter(o => !o.group).map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+        {[...new Set(normalized.filter(o => o.group).map(o => o.group))].map(group => <optgroup key={group} label={group}>{normalized.filter(o => o.group === group).map(o => <option key={o.value} value={o.value}>{o.label}</option>)}</optgroup>)}
       </select>
       <Icon name="chevronDown" size={12} style={{ position: 'absolute', right: 8, pointerEvents: 'none', color: 'var(--c-fg2)' }} />
     </div>
-  );
-}
-
-function Textarea({ value, onChange, placeholder, rows = 3, style }) {
-  const [focus, setFocus] = useState(false);
-  return (
-    <textarea
-      value={value} placeholder={placeholder} rows={rows}
-      onChange={e => onChange && onChange(e.target.value)}
-      onFocus={() => setFocus(true)} onBlur={() => setFocus(false)}
-      style={{
-        width: '100%', padding: '8px 10px',
-        border: fieldBorder(focus), borderRadius: 4, background: 'var(--c-surface)',
-        fontSize: 13, color: 'var(--c-fg)',
-        resize: 'vertical', outline: 'none',
-        ...style
-      }}
-    />
   );
 }
 
@@ -269,4 +253,4 @@ function Spinner({ size = 16, color = 'var(--c-fg)' }) {
   );
 }
 
-Object.assign(window, { Icon, Button, IconButton, Badge, StatusBadge, StatTiles, Input, Select, Textarea, Checkbox, Spinner });
+Object.assign(window, { Icon, Button, IconButton, Badge, StatusBadge, StatTiles, Input, Select, Checkbox, Spinner });

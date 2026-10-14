@@ -10,7 +10,7 @@ const _soulLbl = { fontSize: 12, color: 'var(--c-fg2)', marginBottom: 4, display
 function StringList({ field, label, addLabel, items, onAdd, onSet, onRemove }) {
   return (
     <Panel title={label} actions={
-      <Button variant="ghost" size="sm" icon="plus" onClick={() => onAdd(field)}>{addLabel}</Button>
+      <Button write="system" variant="ghost" size="sm" icon="plus" onClick={() => onAdd(field)}>{addLabel}</Button>
     }>
       <div style={{ padding: '10px 14px', display: 'flex', flexDirection: 'column', gap: 7 }}>
         {items.length === 0 && <EmptyState icon="list" message="尚無項目" />}
@@ -19,7 +19,7 @@ function StringList({ field, label, addLabel, items, onAdd, onSet, onRemove }) {
             <span style={{ fontSize: 12, color: 'var(--c-fg3)', width: 22, textAlign: 'right', flexShrink: 0 }}>{i + 1}.</span>
             <input style={{ ..._soulInp, flex: 1 }} value={v}
               onChange={e => onSet(field, i, e.target.value)} />
-            <Button variant="ghost" size="sm" icon="trash"
+            <Button write="system" variant="ghost" size="sm" icon="trash"
               style={{ color: 'var(--c-danger)' }} onClick={() => onRemove(field, i)} />
           </div>
         ))}
@@ -50,7 +50,7 @@ function SoulEditor({ soul, isNew, onSave, onCancel, saving }) {
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
       <PageHeader title={isNew ? '新增 Soul' : `編輯 Soul — ${form.soul_id}`}>
         <Button variant="ghost" size="sm" icon="arrowLeft" onClick={onCancel}>返回</Button>
-        <Button variant="primary" size="sm" icon="check" loading={saving}
+        <Button write="system" variant="primary" size="sm" icon="check" loading={saving}
           onClick={() => onSave(form)}>儲存</Button>
       </PageHeader>
 
@@ -143,7 +143,7 @@ function PageE() {
     if (!preview.success) return;
     const affected = preview.data.bound_users || [];
     const ok = await showConfirm('刪除 Soul',
-      `確定要刪除 Soul "${soulId}" 嗎？此操作無法復原。已綁定此 Soul 的使用者將回退到預設 Soul。受影響的綁定使用者（${affected.length}）：${affected.join('、') || '無'}。`);
+      `確定要刪除 Soul "${soulId}" 嗎？此操作無法復原。已綁定此 Soul 的使用者將回退到預設 Soul；綁定仍保留，同 ID Soul 重建後會再次生效。受影響的綁定使用者（${affected.length}）：${affected.join('、') || '無'}。`);
     if (!ok) return;
     const res = await apiCall('DELETE', `souls/${encodeURIComponent(soulId)}`);
     if (res.success) {
@@ -176,8 +176,8 @@ function PageE() {
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
       <PageHeader title="Soul 人格" count={souls.length} desc="NYA 的語氣、規則與禁止事項；可指定給個別使用者">
         <Button variant="secondary" size="sm" icon="refresh" loading={loading} onClick={loadAll}>重新整理</Button>
-        <Button variant="secondary" size="sm" onClick={handleReload} title="重新讀取 Soul 設定檔">從檔案重新載入</Button>
-        <Button variant="primary" size="sm" icon="plus"
+        <Button write="system" variant="secondary" size="sm" onClick={handleReload} title="重新讀取 Soul 設定檔">從檔案重新載入</Button>
+        <Button write="system" variant="primary" size="sm" icon="plus"
           onClick={() => setEditing({ soul: null, isNew: true })}>新增 Soul</Button>
       </PageHeader>
 
@@ -207,9 +207,9 @@ function PageE() {
                       </TD>
                       <TD center>
                         <div style={{ display: 'flex', gap: 6, justifyContent: 'center' }}>
-                          <Button variant="ghost" size="sm" icon="edit" onClick={() => openEdit(s.id)}>編輯</Button>
+                          <Button write="system" variant="ghost" size="sm" icon="edit" onClick={() => openEdit(s.id)}>編輯</Button>
                           {(!status || s.id !== status.default_soul_id) && (
-                            <Button variant="ghost" size="sm" icon="trash"
+                            <Button write="system" variant="ghost" size="sm" icon="trash"
                               style={{ color: 'var(--c-danger)' }} onClick={() => handleDelete(s.id)} />
                           )}
                         </div>

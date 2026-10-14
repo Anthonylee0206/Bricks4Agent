@@ -34,6 +34,23 @@ public sealed class NyaChatSettingsTests
     }
 
     [Fact]
+    public async Task Config_ResetPreservesHiddenEngineOverride()
+    {
+        await using var host = new Host();
+        var db = host.App.Services.GetRequiredService<NyaDb>().Db;
+        db.EnsureTable<NyaConfigEntry>();
+        db.Insert(new NyaConfigEntry { ConfigKey = "nya:chat", ConfigJson = "{\"Enabled\":false,\"ShortTermMessageLimit\":1200}" });
+        var store = new NyaChatConfigStore(new NyaChatConfig { Enabled = true, ShortTermMessageLimit = 200 }, db, NullLogger<NyaChatConfigStore>.Instance);
+        store.Current.Enabled.Should().BeFalse();
+        await store.ResetAsync("admin", "super_admin", default);
+        store.Current.Enabled.Should().BeFalse();
+        store.Current.ShortTermMessageLimit.Should().Be(200);
+        db.Get<NyaConfigEntry>("nya:chat")!.ConfigJson.Should().Be("{\"Enabled\":false}");
+        var restarted = new NyaChatConfigStore(new NyaChatConfig { Enabled = true }, db, NullLogger<NyaChatConfigStore>.Instance);
+        restarted.Current.Enabled.Should().BeFalse();
+    }
+
+    [Fact]
     public async Task Config_PatchesPersistPartialOverridesAndResetWithAuditEvenWhenDisabled()
     {
         await using var host = new Host();
@@ -44,9 +61,9 @@ public sealed class NyaChatSettingsTests
         store.Current.MaxToolRounds.Should().Be(3);
         var effective = await host.Request("GET", "/config/effective");
         var settings = effective.Data.GetProperty("settings").EnumerateArray().ToDictionary(s => s.GetProperty("key").GetString()!);
-        settings["ShortTermMessageLimit"].GetProperty("source").GetString().Should().Be("後台設定");
-        settings["MaxToolRounds"].GetProperty("source").GetString().Should().Be("appsettings 預設");
-        settings.Values.Should().OnlyContain(s => s.GetProperty("applies_immediately").GetBoolean());
+        settings["ShortTermMessageLimit"].GetProperty("value").GetInt32().Should().Be(1200);
+        settings.Keys.Should().NotContain(k => k.StartsWith("Summar") || k == "AutoSummarizeEnabled");
+        effective.Data.TryGetProperty("read_only", out _).Should().BeFalse();
         var nyaDb = host.App.Services.GetRequiredService<NyaDb>().Db;
         nyaDb.Get<NyaConfigEntry>("nya:chat")!.ConfigJson.Should().NotContain("ApiKey").And.NotContain("DbPath");
         nyaDb.GetAll<NyaAuditLog>().Should().ContainSingle(l => l.Action == "config_update" && l.DetailJson.Contains("admin"));
@@ -77,7 +94,6 @@ public sealed class NyaChatSettingsTests
     [InlineData("{\"AuditEnabled\":\"false\"}")]
     [InlineData("{\"DefaultSoulId\":\"../evil\"}")]
     [InlineData("{\"MinOutputTokens\":4096}")]
-    [InlineData("{\"FactTokenBudgetRatio\":0.9}")]
     [InlineData("{\"DefaultMaxContextTokens\":512}")]
     [InlineData("{\"SummarizeKeepRecentCount\":12}")]
     [InlineData("{\"maxToolRounds\":4,\"MaxToolRounds\":5}")]

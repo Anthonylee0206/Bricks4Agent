@@ -346,6 +346,8 @@ public class NyaLlmParameterProperty
 /// <summary>統一 LLM 請求格式</summary>
 public class NyaLlmRequest
 {
+    public string? AuditTraceId { get; set; }
+    public string? AuditUserId { get; set; }
     public string Model { get; set; } = "";
     public List<NyaLlmMessage> Messages { get; set; } = new();
     public float Temperature { get; set; } = 0.7f;

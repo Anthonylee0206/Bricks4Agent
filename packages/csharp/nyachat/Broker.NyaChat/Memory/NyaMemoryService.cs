@@ -132,11 +132,12 @@ public class NyaMemoryService
     /// 取所有訊息（含已摘要），用於管理介面查詢。支援 limit + offset 分頁，
     /// 以及可選話題篩選（topicId 非空時只回該話題訊息）。
     /// </summary>
-    public List<NyaMessage> GetAllMessages(string userId, int limit = 100, int offset = 0, string? topicId = null)
+    public List<NyaMessage> GetAllMessages(string userId, int limit = 100, int offset = 0, string? topicId = null, bool unassigned = false)
     {
         var hasTopic = !string.IsNullOrWhiteSpace(topicId);
         var sql = "SELECT * FROM nya_messages WHERE user_id = @userId AND is_deleted = 0"
                 + (hasTopic ? " AND topic_id = @topicId" : "")
+                + (unassigned ? " AND topic_id IS NULL" : "")
                 + " ORDER BY sequence DESC LIMIT @limit OFFSET @offset";
         var p = new Dictionary<string, object?> { ["userId"] = userId, ["limit"] = limit, ["offset"] = offset };
         if (hasTopic) p["topicId"] = topicId;
@@ -202,11 +203,12 @@ public class NyaMemoryService
             new { userId, topicId, fromSeq, toSeq });
 
     /// <summary>統計未刪除訊息總數（含 is_summarized=true）；可選話題篩選。</summary>
-    public int CountAllMessages(string userId, string? topicId = null)
+    public int CountAllMessages(string userId, string? topicId = null, bool unassigned = false)
     {
         var hasTopic = !string.IsNullOrWhiteSpace(topicId);
         var sql = "SELECT COUNT(*) FROM nya_messages WHERE user_id = @userId AND is_deleted = 0"
-                + (hasTopic ? " AND topic_id = @topicId" : "");
+                + (hasTopic ? " AND topic_id = @topicId" : "")
+                + (unassigned ? " AND topic_id IS NULL" : "");
         var p = new Dictionary<string, object?> { ["userId"] = userId };
         if (hasTopic) p["topicId"] = topicId;
         return _db.Scalar<int>(sql, p);
@@ -226,11 +228,32 @@ public class NyaMemoryService
     // 話題管理（DB 持久化）
     // ═══════════════════════════════════════════════════════════════════════════
 
-    /// <summary>
-    /// 取得或建立此 user 的 active 話題 ID。
-    /// 若 DB 中已有 active 話題則直接回傳，否則建立第一個話題。
-    /// 不依賴 in-memory session，重啟後狀態不丟失。
-    /// </summary>
+    public NyaTopic? GetActiveTopic(string userId)
+        => _db.QueryFirst<NyaTopic>("SELECT * FROM nya_topics WHERE user_id = @userId AND is_active = 1", new { userId });
+
+    public List<string> GetExternalConversationIds(string userId)
+        => _db.Query<NyaMessage>(
+            "SELECT DISTINCT topic_id FROM nya_messages WHERE user_id = @userId AND topic_id IS NOT NULL AND topic_id NOT IN (SELECT topic_id FROM nya_topics WHERE user_id = @userId) AND is_deleted = 0 ORDER BY topic_id", new { userId })
+            .Select(m => m.TopicId!).ToList();
+
+    public IReadOnlyDictionary<string, string[]> DiagnoseMessages(string userId, IEnumerable<NyaMessage> messages)
+    {
+        var active = GetActiveTopic(userId);
+        var candidates = active == null ? new HashSet<string>() : GetRecentConversation(userId, active.TopicId,
+            _config.ShortTermMessageLimit, includeSummarized: !_config.AutoSummarizeEnabled).Select(m => m.MessageId).ToHashSet();
+        var rules = ForgetRules(userId);
+        return messages.ToDictionary(m => m.MessageId, m =>
+        {
+            var reasons = new List<string>();
+            var forgotten = IsForgotten(m, rules);
+            if (forgotten) reasons.Add("forgotten");
+            if (active == null || m.TopicId != active.TopicId) reasons.Add("other_conversation");
+            else if (!forgotten && !candidates.Contains(m.MessageId))
+                reasons.Add(_config.AutoSummarizeEnabled && m.IsSummarized ? "summarized" : "outside_recent_window");
+            return reasons.ToArray();
+        });
+    }
+
     public string GetOrCreateActiveTopic(string userId)
     {
         // Fix C：「查 active → 無則建立」原為兩段非原子（且 QueryFirst 未持 _writeGate），
@@ -668,19 +691,22 @@ public class NyaMemoryService
 
     private sealed record ForgetRule(DateTime CreatedAt, long ThroughSequence, IReadOnlyList<string> Terms);
 
-    private List<ForgetRule> ForgetRules(string userId)
-        => GetForgotten(userId).Select(g =>
+    public static IReadOnlyList<string> GetForgottenMatchTerms(NyaForgotten record)
+    {
+        var terms = new List<string>();
+        try
         {
-            var terms = new List<string>();
-            try
-            {
-                if (!string.IsNullOrWhiteSpace(g.MatchTermsJson))
-                    terms.AddRange(System.Text.Json.JsonSerializer.Deserialize<List<string>>(g.MatchTermsJson!) ?? new());
-            }
-            catch (System.Text.Json.JsonException) { }
-            if (g.FactValue.Trim().Length >= 2) terms.Add(g.FactValue.Trim());
-            return new ForgetRule(AsUtc(g.CreatedAt), g.ThroughSequence, terms.Distinct().ToList());
-        }).Where(r => r.Terms.Count > 0).ToList();
+            if (!string.IsNullOrWhiteSpace(record.MatchTermsJson))
+                terms.AddRange(System.Text.Json.JsonSerializer.Deserialize<List<string>>(record.MatchTermsJson) ?? new());
+        }
+        catch (System.Text.Json.JsonException) { }
+        if (record.FactValue.Trim().Length >= 2) terms.Add(record.FactValue.Trim());
+        return terms.Distinct().ToList();
+    }
+
+    private List<ForgetRule> ForgetRules(string userId)
+        => GetForgotten(userId).Select(g => new ForgetRule(AsUtc(g.CreatedAt), g.ThroughSequence, GetForgottenMatchTerms(g)))
+            .Where(r => r.Terms.Count > 0).ToList();
 
     private static DateTime AsUtc(DateTime value)
         => value.Kind switch
@@ -937,7 +963,7 @@ public class NyaMemoryService
             : " WHERE u.user_id LIKE @keyword";
         var keywordParam = $"%{keyword}%";
         const string knownUsers =
-            "(SELECT user_id FROM nya_messages UNION SELECT user_id FROM nya_facts WHERE is_active = 1) u";
+            "(SELECT user_id FROM nya_messages UNION SELECT user_id FROM nya_facts WHERE is_active = 1 UNION SELECT user_id FROM nya_topics UNION SELECT user_id FROM nya_soul_bindings UNION SELECT user_id FROM nya_forgotten) u";
 
         var total = _db.Scalar<int>(
             $"SELECT COUNT(*) FROM {knownUsers}{keywordFilter}",
@@ -957,7 +983,7 @@ public class NyaMemoryService
             return (new List<NyaUserListEntry>(), total);
 
         var factCounts = _db.Query<NyaUserFactCountRow>(
-            "SELECT user_id, COUNT(*) AS fact_count FROM nya_facts WHERE is_active = 1 GROUP BY user_id");
+            "SELECT user_id, COUNT(*) AS fact_count FROM nya_facts WHERE is_active = 1 AND (expires_at IS NULL OR expires_at > @now) GROUP BY user_id", new { now = DateTime.UtcNow });
         var factMap = factCounts.ToDictionary(x => x.UserId, x => x.FactCount);
 
         var souls = _db.Query<NyaUserSoulRow>(
