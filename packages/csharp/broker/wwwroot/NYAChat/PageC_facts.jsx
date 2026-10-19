@@ -74,7 +74,7 @@ function TabC4({ userId, onChanged }) {
     if (!res.success) { setError(res.message); return; }
     load(); onChanged?.();
   }
-  const groups = [...new Set(references.filter(r => r.isActive).map(r => r.forgetId))];
+  const groups = [...new Set(references.filter(r => r.is_active).map(r => r.forget_id))];
   return <ContentArea>
     {error && <div role="alert">{error}</div>}
     <Panel title="筆記版本" subtitle={'容量 ' + (capacity.capacity ?? '—') + ' 則；單則 ' + (capacity.max_length ?? '—') + ' 字'} actions={<Button size="sm" loading={loading} onClick={() => load()}>重新整理</Button>}>
@@ -107,7 +107,7 @@ function TabC4({ userId, onChanged }) {
         <Input value={terms} onChange={setTerms} placeholder="查找候選關鍵字" />
         <Button write="user" onClick={() => find()} disabled={!terms.trim()}>查找固定候選</Button>
         {selection && <div><div>selection_id：{selection.selection_id}</div><JsonBlock raw={JSON.stringify({ notes: selection.notes, messages: selection.messages }, null, 2)} /><Button write="user" onClick={forget}>隱藏候選</Button><Button onClick={() => setSelection(null)}>取消</Button></div>}
-        {groups.map(id => <div key={id}>{id} · {references.filter(r => r.forgetId === id && r.isActive).length} 個引用 <Button write="user" size="sm" onClick={() => unforget(id)}>撤銷此筆</Button></div>)}
+        {groups.map(id => <div key={id}>{id} · {references.filter(r => r.forget_id === id && r.is_active).length} 個引用 <Button write="user" size="sm" onClick={() => unforget(id)}>撤銷此筆</Button></div>)}
         <details><summary>隱藏引用原始資料</summary><JsonBlock raw={JSON.stringify(references, null, 2)} /></details>
         <details><summary>候選紀錄</summary><JsonBlock raw={JSON.stringify(selections, null, 2)} /></details>
       </div>

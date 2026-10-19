@@ -315,7 +315,7 @@ function SoulBindPanel({ userId, availableSouls, currentSoulId, effectiveSoulId,
 
   useEffect(() => {
     setSouls(availableSouls);
-    setSelected(s => s || (availableSouls[0] || {}).id || '');
+    setSelected(s => s || (availableSouls[0] || {}).soul_id || '');
     setLoading(false);
   }, [availableSouls]);
   useEffect(() => { setSelected(currentSoulId || ''); }, [currentSoulId]);
@@ -347,7 +347,7 @@ function SoulBindPanel({ userId, availableSouls, currentSoulId, effectiveSoulId,
           ? <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--c-fg2)' }}><Spinner size={13} /><span style={{ fontSize: 13 }}>載入 Soul 清單…</span></div>
           : <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <span style={{ fontSize: 12, color: 'var(--c-fg2)', width: 52, flexShrink: 0 }}>變更</span>
-              <Select value={selected} options={souls.map(s => ({ value: s.id, label: `${s.display_name}（${s.id}）` }))}
+              <Select value={selected} options={souls.map(s => ({ value: s.soul_id, label: `${s.display_name}（${s.soul_id}）` }))}
                 onChange={setSelected} style={{ flex: 1 }} />
               <Button write="user" variant="primary" size="sm" loading={applyLoading} onClick={handleApply}
                 disabled={!selected || selected === currentSoulId}>套用</Button>

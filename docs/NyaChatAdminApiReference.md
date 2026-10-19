@@ -54,9 +54,9 @@ Responses use the broker `ApiResponse<T>` wrapper, serialized with the default A
 }
 ```
 
-On error `success` is `false`, `data` is `null` and `errorCode` is the code passed to `ApiResponseHelper.Error` (defaults to `400`; note that several handlers return HTTP 404/409 while passing no code, so `errorCode` can be `400` on a 404 response).
+On error `success` is `false`, `data` is `null` and `errorCode` is the code passed to `ApiResponseHelper.Error` (defaults to `400`); it always matches the HTTP status of the response.
 
-**Field naming inside `data`:** handlers build anonymous objects with explicit snake_case names (`user_id`, `created_at`, ...), which are emitted as written. Where a handler returns a C# model directly (turns, turn work, hide references, selections, config, LLM catalogs), its PascalCase properties are emitted in **camelCase** (`turnId`, `forgetId`, `isActive`, ...). This is called out per endpoint.
+**Field naming inside `data`:** handlers build anonymous objects with explicit snake_case names (`user_id`, `created_at`, ...), which are emitted as written. Where a handler returns a C# model (turns, turn work, hide references, selections, LLM catalogs, tool parameters), it is serialized with a snake_case naming policy so these endpoints follow the same convention (`turn_id`, `forget_id`, `is_active`, ...). Model properties that hold raw JSON text keep a `_json` suffix (`call_json`, `note_ids_json`). The one deliberate exception is `GET /config` (and the `config` echoed by `PATCH`/`PUT /config`), which uses the PascalCase configuration keys that `PATCH /config` accepts and `GET /config/effective` reports as `key`.
 
 Exceptions to the envelope:
 - Non-localhost: bare `403`.
@@ -127,8 +127,8 @@ All field schemas below describe the shape of `data` only. Errors 401/403 from a
 ```json
 {
   "user_id": "line:Uabc123...",
-  "active_topic": { "id": "nyat_...", "title": "Chat 1" },
-  "available_souls": [ { "id": "default", "display_name": "NYA" } ],
+  "active_topic": { "topic_id": "nyat_...", "title": "Chat 1" },
+  "available_souls": [ { "soul_id": "default", "display_name": "NYA" } ],
   "forgotten_count": 1,
   "last_turn": { "trace_id": "...", "created_at": "2026-05-28T10:30:00Z", "detail_json": "{...}" },
   "auto_summarize_enabled": false,
@@ -429,21 +429,21 @@ All field schemas below describe the shape of `data` only. Errors 401/403 from a
 | limit | int | no | 50 | Clamped to 1-100 |
 | offset | int | no | 0 | Clamped to >= 0 |
 
-**Response `data`** (model `NyaTurn`, camelCase)
+**Response `data`** (model `NyaTurn`, snake_case)
 ```json
 {
   "turns": [
     {
-      "turnId": "...",
-      "userId": "line:Uabc123...",
+      "turn_id": "...",
+      "user_id": "line:Uabc123...",
       "scope": "normal",
-      "conversationId": null,
-      "startTopicId": "nyat_...",
-      "currentTopicId": "nyat_...",
+      "conversation_id": null,
+      "start_topic_id": "nyat_...",
+      "current_topic_id": "nyat_...",
       "status": "completed",
-      "failureReason": null,
-      "createdAt": "2026-05-28T10:30:00Z",
-      "finishedAt": "2026-05-28T10:30:04Z"
+      "failure_reason": null,
+      "created_at": "2026-05-28T10:30:00Z",
+      "finished_at": "2026-05-28T10:30:04Z"
     }
   ]
 }
@@ -459,25 +459,25 @@ All field schemas below describe the shape of `data` only. Errors 401/403 from a
 
 **Purpose**: Tool-call work records of one turn, in order, with a computed hidden flag (hidden when the work item, a dependency message/note, or a dependency's turn is covered by an active hide reference).
 
-**Response `data`** (model `NyaTurnWork`, camelCase)
+**Response `data`** (model `NyaTurnWork`, snake_case)
 ```json
 {
   "work": [
     {
-      "workId": "nyaw_...",
-      "turnId": "...",
+      "work_id": "nyaw_...",
+      "turn_id": "...",
       "position": 0,
-      "callJson": "{...}",
-      "resultJson": "{...}",
-      "effectsJson": "[...]",
-      "dependenciesJson": "[...]",
-      "isHidden": false
+      "call_json": "{...}",
+      "result_json": "{...}",
+      "effects_json": "[...]",
+      "dependencies_json": "[...]",
+      "is_hidden": false
     }
   ]
 }
 ```
 
-**Errors**: 404 with an empty body (turn not found for user)
+**Errors**: 404 (turn not found for user)
 
 ---
 
@@ -615,19 +615,19 @@ All field schemas below describe the shape of `data` only. Errors 401/403 from a
 
 **Query Params**: `limit` (default 50, clamped 1-100), `offset` (default 0)
 
-**Response `data`** (model `NyaMemorySelection`, camelCase)
+**Response `data`** (model `NyaMemorySelection`, snake_case)
 ```json
 {
   "selections": [
     {
-      "selectionId": "nyas_...",
-      "userId": "line:Uabc123...",
+      "selection_id": "nyas_...",
+      "user_id": "line:Uabc123...",
       "scope": "normal",
-      "conversationId": null,
-      "visibilityVersion": 12,
-      "noteIdsJson": "[\"...\"]",
-      "messageIdsJson": "[\"nyam_...\"]",
-      "expiresAt": "2026-05-28T10:45:00Z"
+      "conversation_id": null,
+      "visibility_version": 12,
+      "note_ids_json": "[\"...\"]",
+      "message_ids_json": "[\"nyam_...\"]",
+      "expires_at": "2026-05-28T10:45:00Z"
     }
   ]
 }
@@ -722,20 +722,20 @@ All field schemas below describe the shape of `data` only. Errors 401/403 from a
 
 **Purpose**: All hide references (active and revoked) created by forget operations, newest first.
 
-**Response `data`** (model `NyaHideReference`, camelCase)
+**Response `data`** (model `NyaHideReference`, snake_case)
 ```json
 {
   "references": [
     {
-      "referenceId": "...",
-      "forgetId": "...",
-      "userId": "line:Uabc123...",
+      "reference_id": "...",
+      "forget_id": "...",
+      "user_id": "line:Uabc123...",
       "scope": "normal",
-      "conversationId": null,
+      "conversation_id": null,
       "kind": "message",
-      "targetId": "nyam_...",
-      "isActive": true,
-      "createdAt": "2026-05-28T10:40:00Z"
+      "target_id": "nyam_...",
+      "is_active": true,
+      "created_at": "2026-05-28T10:40:00Z"
     }
   ]
 }
@@ -1039,7 +1039,7 @@ All field schemas below describe the shape of `data` only. Errors 401/403 from a
 
 **Response `data`**
 ```json
-{ "total": 1, "souls": [ { "id": "default", "display_name": "NYA" } ] }
+{ "total": 1, "souls": [ { "soul_id": "default", "display_name": "NYA" } ] }
 ```
 
 **Errors**: none beyond auth
@@ -1142,7 +1142,7 @@ All field schemas below describe the shape of `data` only. Errors 401/403 from a
   "ok": true,
   "loaded": 2,
   "failures": [ { "file": "bad.json", "message": "..." } ],
-  "souls": [ { "id": "default", "display_name": "NYA" } ]
+  "souls": [ { "soul_id": "default", "display_name": "NYA" } ]
 }
 ```
 
@@ -1203,10 +1203,10 @@ Call sites are `chat`, `summarization` and `__default__` (fallback route).
 
 **Purpose**: Static catalog of the params allowed in a profile's `params_json` (drives the UI form and validation).
 
-**Response `data`** (array of `NyaLlmParamSpec`, camelCase)
+**Response `data`** (array of `NyaLlmParamSpec`, snake_case)
 ```json
 [
-  { "key": "temperature", "type": "number", "min": 0, "max": 2, "doc": "...", "common": true, "appliesTo": ["*"] }
+  { "key": "temperature", "type": "number", "min": 0, "max": 2, "doc": "...", "common": true, "applies_to": ["*"] }
 ]
 ```
 
@@ -1222,17 +1222,17 @@ Keys: `temperature`, `top_p`, `max_context_tokens`, `timeout_seconds`, `enable_t
 
 **Purpose**: Provider presets for creating profiles.
 
-**Response `data`** (array of `NyaLlmProviderTemplate`, camelCase)
+**Response `data`** (array of `NyaLlmProviderTemplate`, snake_case)
 ```json
 [
   {
     "id": "deepseek",
     "label": "DeepSeek",
     "provider": "openai_chat",
-    "defaultBaseUrl": "https://api.deepseek.com/chat/completions",
-    "defaultParams": { "top_p": 1.0 },
-    "defaultModel": "deepseek-flash",
-    "extraBody": { "thinking": { "type": "disabled" } }
+    "default_base_url": "https://api.deepseek.com/chat/completions",
+    "default_params": { "top_p": 1.0 },
+    "default_model": "deepseek-flash",
+    "extra_body": { "thinking": { "type": "disabled" } }
   }
 ]
 ```
@@ -1349,7 +1349,7 @@ All string fields must be JSON strings when present.
 
 **Response `data`**
 ```json
-{ "deleted": "local" }
+{ "profile_id": "local", "deleted": true }
 ```
 
 **Errors**: 404 (not found), 409 (profile still in use, from the store)
@@ -1458,20 +1458,20 @@ Test failures (timeout, HTTP error, empty reply) return `200` with `ok: false` a
 
 **Purpose**: The full current `NyaChatConfig`, with `ChatApiKey` and every `LlmProfiles[*].ApiKey` masked.
 
-**Response `data`** (model `NyaChatConfig`, camelCase; abbreviated)
+**Response `data`** (model `NyaChatConfig`, PascalCase configuration keys; abbreviated)
 ```json
 {
-  "noteCapacity": 32,
-  "noteMaxLength": 512,
-  "topicCapacity": 64,
-  "enabled": true,
-  "shortTermMessageLimit": 200,
-  "autoSummarizeEnabled": false,
-  "summarizeTriggerCount": 12,
-  "chatApiKey": "****",
-  "llmProfiles": { },
-  "defaultSoulId": "default",
-  "auditEnabled": true
+  "NoteCapacity": 32,
+  "NoteMaxLength": 512,
+  "TopicCapacity": 64,
+  "Enabled": true,
+  "ShortTermMessageLimit": 200,
+  "AutoSummarizeEnabled": false,
+  "SummarizeTriggerCount": 12,
+  "ChatApiKey": "****",
+  "LlmProfiles": { },
+  "DefaultSoulId": "default",
+  "AuditEnabled": true
 }
 ```
 
@@ -1626,7 +1626,7 @@ Validation: only the keys listed in 53; duplicate keys rejected; values must mat
 }
 ```
 
-**Field notes**: `function_tool` currently always equals `usable`; `parameters` is the tool schema's parameter list (camelCase model).
+**Field notes**: `function_tool` currently always equals `usable`; `parameters` is the tool schema's parameter list (snake_case, e.g. `min_length`).
 
 **Errors**: 400 (missing `user_id` or `channel_type`)
 
@@ -1673,7 +1673,7 @@ Validation: only the keys listed in 53; duplicate keys rejected; values must mat
     "chat": { "provider": "ollama", "model": "...", "base_url": "...", "timeout_seconds": 120 },
     "summarization": { "provider": "ollama", "model": "...", "base_url": "...", "timeout_seconds": 90 }
   },
-  "profiles": [ { "name": "local", "provider": "ollama", "model": "...", "template": "local" } ],
+  "profiles": [ { "profile_id": "local", "provider": "ollama", "model": "...", "template": "local" } ],
   "chat_model": "...",
   "chat_provider": "ollama",
   "summarization_model": "...",
@@ -1681,7 +1681,7 @@ Validation: only the keys listed in 53; duplicate keys rejected; values must mat
   "summarize_trigger_count": 12,
   "summary_version_retention": 5,
   "default_soul_id": "default",
-  "available_souls": [ { "id": "default", "display_name": "NYA" } ]
+  "available_souls": [ { "soul_id": "default", "display_name": "NYA" } ]
 }
 ```
 

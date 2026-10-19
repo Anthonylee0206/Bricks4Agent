@@ -197,20 +197,20 @@ function PageE() {
                   { label: '',            width: 160, center: true },
                 ]}>
                   {souls.map(s => (
-                    <TR key={s.id}>
-                      <TD mono style={{ fontWeight: 500 }}>{s.id}</TD>
+                    <TR key={s.soul_id}>
+                      <TD mono style={{ fontWeight: 500 }}>{s.soul_id}</TD>
                       <TD>{s.display_name}</TD>
                       <TD center>
-                        {status && s.id === status.default_soul_id
+                        {status && s.soul_id === status.default_soul_id
                           ? <StatusBadge ok>default</StatusBadge>
                           : <span style={{ color: 'var(--c-fg4)' }}>—</span>}
                       </TD>
                       <TD center>
                         <div style={{ display: 'flex', gap: 6, justifyContent: 'center' }}>
-                          <Button write="system" variant="ghost" size="sm" icon="edit" onClick={() => openEdit(s.id)}>編輯</Button>
-                          {(!status || s.id !== status.default_soul_id) && (
+                          <Button write="system" variant="ghost" size="sm" icon="edit" onClick={() => openEdit(s.soul_id)}>編輯</Button>
+                          {(!status || s.soul_id !== status.default_soul_id) && (
                             <Button write="system" variant="ghost" size="sm" icon="trash"
-                              style={{ color: 'var(--c-danger)' }} onClick={() => handleDelete(s.id)} />
+                              style={{ color: 'var(--c-danger)' }} onClick={() => handleDelete(s.soul_id)} />
                           )}
                         </div>
                       </TD>

@@ -132,5 +132,5 @@ assert.ok(noteSource.includes('source_message_ids'));
 assert.ok(noteSource.includes('on_date'));
 assert.ok(noteSource.includes('write="user"'));
 const turnSource = fs.readFileSync(path.join(root, 'PageC.jsx'), 'utf8');
-for (const field of ['origin_topic_id', 'turn_status', 'failureReason', '/turns']) assert.ok(turnSource.includes(field));
+for (const field of ['origin_topic_id', 'turn_status', 'failure_reason', 'turn_id', '/turns']) assert.ok(turnSource.includes(field));
 console.log(`NyaChat: ${jsx.length} JSX compiled with Babel 7.29.0; no browser-source comments; routing, permissions and audit presentation checks passed.`);

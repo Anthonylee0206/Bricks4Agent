@@ -113,7 +113,7 @@ public static class NyaChatEndpoints
                 {
                     id = t.Schema.Name, enabled = t.Enabled, usable = usable.Contains(t.Schema.Name),
                     function_tool = usable.Contains(t.Schema.Name),
-                    reason = unavailable.GetValueOrDefault(t.Schema.Name), parameters = t.Schema.Parameters
+                    reason = unavailable.GetValueOrDefault(t.Schema.Name), parameters = SnakeCase(t.Schema.Parameters)
                 })
             }));
         });
@@ -129,7 +129,7 @@ public static class NyaChatEndpoints
                 return denied;
 
             if (!toolRegistry.IsKnownTool(toolId))
-                return Results.NotFound(ApiResponseHelper.Error($"Unknown tool: {toolId}"));
+                return Results.NotFound(ApiResponseHelper.Error($"Unknown tool: {toolId}", 404));
 
             var body = RequestBodyHelper.GetBody(ctx);
             if (!body.TryGetProperty("enabled", out var enabledEl) ||
@@ -222,7 +222,7 @@ public static class NyaChatEndpoints
                 task_routing = routing,
                 profiles = store.ListProfiles().Select(e => new
                 {
-                    name = e.ProfileId,
+                    profile_id = e.ProfileId,
                     provider = e.Provider,
                     model = e.Model,
                     template = e.Template
@@ -235,14 +235,14 @@ public static class NyaChatEndpoints
                 summarize_trigger_count = config.SummarizeTriggerCount,
                 summary_version_retention = config.SummaryVersionRetention,
                 default_soul_id = config.DefaultSoulId,
-                available_souls = souls.Select(s => new { id = s.Id, display_name = s.DisplayName })
+                available_souls = souls.Select(s => new { soul_id = s.Id, display_name = s.DisplayName })
             }));
         });
 
         nya.MapGet("/config", (HttpContext ctx, LocalAdminAuthService auth, INyaConfigStore<NyaChatConfig> configStore) =>
         {
             if (!auth.TryRequireAuthenticated(ctx, out _, out var denied)) return denied;
-            return Results.Ok(ApiResponseHelper.Success(NyaChatHotSettings.MaskSecrets(configStore.Current)));
+            return Results.Ok(ApiResponseHelper.Success(PascalCase(NyaChatHotSettings.MaskSecrets(configStore.Current))));
         });
 
         nya.MapGet("/config/effective", (HttpContext ctx, LocalAdminAuthService auth, INyaConfigStore<NyaChatConfig> configStore) =>
@@ -263,7 +263,7 @@ public static class NyaChatEndpoints
                             !soulProvider.ListSouls().Any(s => s.Id.Equals(property.Value.GetString(), StringComparison.OrdinalIgnoreCase)))
                             return Results.BadRequest(ApiResponseHelper.Error("DefaultSoulId 必須指向現有 Soul，請先至 Soul 人格頁建立。"));
                 var changed = await ((NyaChatConfigStore)configStore).PatchAsync(patch, session.Username, session.Role, ctx.RequestAborted);
-                return Results.Ok(ApiResponseHelper.Success(new { changed, config = NyaChatHotSettings.MaskSecrets(configStore.Current) }));
+                return Results.Ok(ApiResponseHelper.Success(new { changed, config = PascalCase(NyaChatHotSettings.MaskSecrets(configStore.Current)) }));
             }
             catch (ArgumentException ex) { return Results.BadRequest(ApiResponseHelper.Error(ex.Message)); }
         }
@@ -345,8 +345,8 @@ public static class NyaChatEndpoints
             return Results.Ok(ApiResponseHelper.Success(new
             {
                 user_id  = ov.UserId,
-                active_topic = activeTopic == null ? null : new { id = activeTopic.TopicId, title = activeTopic.Title },
-                available_souls = soulProvider.ListSouls().Select(s => new { id = s.Id, display_name = s.DisplayName }),
+                active_topic = activeTopic == null ? null : new { topic_id = activeTopic.TopicId, title = activeTopic.Title },
+                available_souls = soulProvider.ListSouls().Select(s => new { soul_id = s.Id, display_name = s.DisplayName }),
                 forgotten_count = memoryService.GetHideReferences(userId).Where(r => r.IsActive).Select(r => r.ForgetId).Distinct().Count(),
                 last_turn = lastInput == null ? null : new { trace_id = lastInput.TraceId, created_at = lastInput.CreatedAt, detail_json = lastInput.DetailJson },
                 auto_summarize_enabled = config.AutoSummarizeEnabled,
@@ -418,7 +418,7 @@ public static class NyaChatEndpoints
             return Results.Ok(ApiResponseHelper.Success(new
             {
                 total = souls.Count,
-                souls = souls.Select(s => new { id = s.Id, display_name = s.DisplayName })
+                souls = souls.Select(s => new { soul_id = s.Id, display_name = s.DisplayName })
             }));
         });
 
@@ -435,7 +435,7 @@ public static class NyaChatEndpoints
                 ok = failures.Length == 0,
                 loaded = souls.Count,
                 failures,
-                souls = souls.Select(s => new { id = s.Id, display_name = s.DisplayName })
+                souls = souls.Select(s => new { soul_id = s.Id, display_name = s.DisplayName })
             }));
         });
 
@@ -487,7 +487,7 @@ public static class NyaChatEndpoints
             if (soul == null) return err!;
 
             if (soulProvider.GetSoulDefinition(soul.SoulId) != null)
-                return Results.Conflict(ApiResponseHelper.Error($"Soul '{soul.SoulId}' already exists. Use PUT to update."));
+                return Results.Conflict(ApiResponseHelper.Error($"Soul '{soul.SoulId}' already exists. Use PUT to update.", 409));
 
             soulProvider.SaveSoul(soul);
             auditLogger.LogSoulChange("soul_create", soul.SoulId);
@@ -1176,7 +1176,7 @@ public static class NyaChatEndpoints
             if (!auth.TryRequireAuthenticated(ctx, out _, out var denied))
                 return denied;
 
-            return Results.Ok(ApiResponseHelper.Success(NyaLlmParamCatalog.All));
+            return Results.Ok(ApiResponseHelper.Success(SnakeCase(NyaLlmParamCatalog.All)));
         });
 
         nya.MapGet("/llm/templates", (
@@ -1186,7 +1186,7 @@ public static class NyaChatEndpoints
             if (!auth.TryRequireAuthenticated(ctx, out _, out var denied))
                 return denied;
 
-            return Results.Ok(ApiResponseHelper.Success(NyaLlmProviderTemplates.All));
+            return Results.Ok(ApiResponseHelper.Success(SnakeCase(NyaLlmProviderTemplates.All)));
         });
 
         nya.MapGet("/llm/call-sites", (HttpContext ctx, LocalAdminAuthService auth) =>
@@ -1313,7 +1313,7 @@ public static class NyaChatEndpoints
             try { ok = store.DeleteProfile(id); }
             catch (InvalidOperationException ex) { return Results.Conflict(ApiResponseHelper.Error(ex.Message, 409)); }
             if (ok) auditLogger.LogLlmProfileDelete(id);
-            return ok ? Results.Ok(ApiResponseHelper.Success(new { deleted = id })) : Results.NotFound(ApiResponseHelper.Error("not found", 404));
+            return ok ? Results.Ok(ApiResponseHelper.Success(new { profile_id = id, deleted = true })) : Results.NotFound(ApiResponseHelper.Error("not found", 404));
         });
 
         nya.MapGet("/llm/routes", (HttpContext ctx, LocalAdminAuthService auth, NyaLlmProfileStore store, INyaConfigStore<NyaChatConfig> configStore) =>
@@ -1423,7 +1423,7 @@ public static class NyaChatEndpoints
         nya.MapPost("/users/{userId}/forget", async (HttpContext ctx, string userId, FactToolPlugin plugin) =>
             ToolResponse(await plugin.ExecuteAsync(Context(ctx, userId, "forget", RequestBodyHelper.GetBody(ctx).GetRawText()), ctx.RequestAborted)));
         nya.MapGet("/users/{userId}/hide-references", (string userId, NyaMemoryService memory) =>
-            Results.Ok(ApiResponseHelper.Success(new { references = memory.GetHideReferences(userId) })));
+            Results.Ok(ApiResponseHelper.Success(new { references = SnakeCase(memory.GetHideReferences(userId)) })));
         nya.MapPost("/users/{userId}/hide-references/{forgetId}/unforget", (HttpContext ctx, string userId, string forgetId, NyaMemoryService memory) =>
         {
             var reference = memory.GetHideReferences(userId).FirstOrDefault(r => r.ForgetId == forgetId && r.IsActive);
@@ -1434,12 +1434,19 @@ public static class NyaChatEndpoints
             return Results.Ok(ApiResponseHelper.Success(new { changed }));
         });
         nya.MapGet("/users/{userId}/selections", (HttpContext ctx, string userId, NyaMemoryService memory) =>
-            Results.Ok(ApiResponseHelper.Success(new { selections = memory.AdminSelections(userId, PageNumber(ctx, "limit", 50, 100), PageNumber(ctx, "offset", 0, int.MaxValue)) })));
+            Results.Ok(ApiResponseHelper.Success(new { selections = SnakeCase(memory.AdminSelections(userId, PageNumber(ctx, "limit", 50, 100), PageNumber(ctx, "offset", 0, int.MaxValue))) })));
         nya.MapGet("/users/{userId}/turns", (HttpContext ctx, string userId, NyaMemoryService memory) =>
-            Results.Ok(ApiResponseHelper.Success(new { turns = memory.ListTurns(userId, PageNumber(ctx, "limit", 50, 100), PageNumber(ctx, "offset", 0, int.MaxValue)) })));
+            Results.Ok(ApiResponseHelper.Success(new { turns = SnakeCase(memory.ListTurns(userId, PageNumber(ctx, "limit", 50, 100), PageNumber(ctx, "offset", 0, int.MaxValue))) })));
         nya.MapGet("/users/{userId}/turns/{turnId}/work", (string userId, string turnId, NyaMemoryService memory) =>
-            memory.GetTurn(userId, turnId) == null ? Results.NotFound() : Results.Ok(ApiResponseHelper.Success(new { work = memory.GetTurnWork(turnId) })));
+            memory.GetTurn(userId, turnId) == null ? Results.NotFound(ApiResponseHelper.Error($"Turn '{turnId}' not found for user.", 404)) : Results.Ok(ApiResponseHelper.Success(new { work = SnakeCase(memory.GetTurnWork(turnId)) })));
     }
+
+    private static readonly JsonSerializerOptions SnakeCaseOptions = new(JsonSerializerDefaults.Web) { PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower };
+    private static readonly JsonSerializerOptions PascalCaseOptions = new(JsonSerializerDefaults.Web) { PropertyNamingPolicy = null };
+
+    private static JsonElement SnakeCase<T>(T value) => JsonSerializer.SerializeToElement(value, SnakeCaseOptions);
+
+    private static JsonElement PascalCase<T>(T value) => JsonSerializer.SerializeToElement(value, PascalCaseOptions);
 
     internal static bool TryResolveRouteAuthorization(
         string method,

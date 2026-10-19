@@ -116,6 +116,7 @@ public class NyaChatEndpointAuthorizationTests
             var references = await Request("GET", "/users/{userId}/hide-references", $"/users/{userId}/hide-references", userValues, session: auditCookie);
             references.Status.Should().Be(200);
             references.Data.GetProperty("references").GetArrayLength().Should().Be(2);
+            references.Data.GetProperty("references").EnumerateArray().Should().OnlyContain(r => r.GetProperty("forget_id").GetString() == forgetId && r.TryGetProperty("is_active", out _));
             var forgetValues = new Dictionary<string, object?> { ["userId"] = userId, ["forgetId"] = forgetId };
             (await Request("POST", "/users/{userId}/hide-references/{forgetId}/unforget", $"/users/{userId}/hide-references/{forgetId}/unforget", forgetValues, session: auditCookie)).Status.Should().Be(403);
             (await Request("POST", "/users/{userId}/forget", $"/users/{userId}/forget", userValues, "{}", session: auditCookie)).Status.Should().Be(403);
@@ -133,7 +134,7 @@ public class NyaChatEndpointAuthorizationTests
             var overview = await Request("GET", "/users/{userId}/overview", $"/users/{userId}/overview", userValues);
             overview.Status.Should().Be(200);
             overview.Data.GetProperty("messages").GetProperty("recent_history").GetInt32().Should().Be(expectedHistory);
-            overview.Data.GetProperty("active_topic").GetProperty("id").GetString().Should().Be(activeTopic.TopicId);
+            overview.Data.GetProperty("active_topic").GetProperty("topic_id").GetString().Should().Be(activeTopic.TopicId);
             var emptyValues = new Dictionary<string, object?> { ["userId"] = "overview-only" };
             var empty = await Request("GET", "/users/{userId}/overview", "/users/overview-only/overview", emptyValues);
             empty.Data.GetProperty("active_topic").ValueKind.Should().Be(JsonValueKind.Null);
@@ -169,6 +170,7 @@ public class NyaChatEndpointAuthorizationTests
             var status = await Request("GET", "/status", "/status");
             status.Status.Should().Be(200);
             status.Data.GetProperty("auto_summarize_enabled").GetBoolean().Should().Be(autoSummarize);
+            status.Data.GetProperty("available_souls").EnumerateArray().Should().OnlyContain(s => s.TryGetProperty("soul_id", out _));
             var summaries = await Request("GET", "/users/{userId}/summaries", $"/users/{userId}/summaries", userValues);
             summaries.Data.GetProperty("auto_summarize_enabled").GetBoolean().Should().Be(autoSummarize);
             summaries.Data.GetProperty("summaries").GetArrayLength().Should().Be(1);

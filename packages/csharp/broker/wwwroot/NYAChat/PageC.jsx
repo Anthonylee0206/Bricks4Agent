@@ -131,7 +131,7 @@ function TabC1({ userId, overview, loading, error, onRefresh }) {
       </div>
 
       <StatTiles cols={4} items={[
-        { label: '目前聊天室', value: overview.active_topic?.title || overview.active_topic?.id || '尚未建立' },
+        { label: '目前聊天室', value: overview.active_topic?.title || overview.active_topic?.topic_id || '尚未建立' },
         { label: '目前聊天室的近期訊息預覽', value: m.recent_history, sub: `上限 ${overview.short_term_message_limit} 則`, accent: 'var(--c-accent-fg)' },
         { label: '未過期筆記', value: f.total_active },
         { label: '遺忘紀錄', value: overview.forgotten_count },
@@ -602,15 +602,15 @@ function TabCTurns({ userId }) {
   }
   useEffect(() => { setOffset(0); load(); }, [userId]);
   async function inspect(turn) {
-    const res = await apiCall('GET', 'users/' + encodeURIComponent(userId) + '/turns/' + encodeURIComponent(turn.turnId) + '/work');
+    const res = await apiCall('GET', 'users/' + encodeURIComponent(userId) + '/turns/' + encodeURIComponent(turn.turn_id) + '/work');
     if (res.success) setWork({ turn, items: res.data.work }); else setError(res.message);
   }
   return <ContentArea><Panel title="輪次狀態" subtitle="失敗輪保留使用者訊息；單一 broker 實例依使用者排隊">
     {error && <div role="alert">{error}</div>}
-    {turns.map(turn => <div key={turn.turnId} style={{ padding: 14, borderBottom: '1px solid var(--c-border)' }}>
-      <div>{turn.turnId} · {({ pending: '處理中', completed: '完成', failed: '失敗' })[turn.status]} · {turn.failureReason || ''}</div>
-      <div>{turn.scope} · 原始聊天室 {turn.startTopicId} → 最後聊天室 {turn.currentTopicId}</div>
-      <div>{fmtTime(turn.createdAt)} · 結束 {fmtTime(turn.finishedAt)}</div>
+    {turns.map(turn => <div key={turn.turn_id} style={{ padding: 14, borderBottom: '1px solid var(--c-border)' }}>
+      <div>{turn.turn_id} · {({ pending: '處理中', completed: '完成', failed: '失敗' })[turn.status]} · {turn.failure_reason || ''}</div>
+      <div>{turn.scope} · 原始聊天室 {turn.start_topic_id} → 最後聊天室 {turn.current_topic_id}</div>
+      <div>{fmtTime(turn.created_at)} · 結束 {fmtTime(turn.finished_at)}</div>
       <Button size="sm" onClick={() => inspect(turn)}>已完成效果與工作紀錄</Button>
     </div>)}
     <Button disabled={offset === 0} onClick={() => { const page = Math.max(0, offset - 50); setOffset(page); load(page); }}>上一頁</Button>

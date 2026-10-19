@@ -68,13 +68,13 @@ function ProfileEditor({ profileId, templates, catalog, onSave, onCancel, saving
     setForm(f => ({
       ...f,
       provider: tpl.provider,
-      base_url: tpl.defaultBaseUrl,
+      base_url: tpl.default_base_url,
       template: tplId,
-      model: tpl.defaultModel || f.model,
+      model: tpl.default_model || f.model,
     }));
-    const merged = { ...(tpl.defaultParams || {}) };
-    if (tpl.extraBody) merged.extra_body = tpl.extraBody;
-    setExtraBodyJson(JSON.stringify(tpl.extraBody || {}, null, 2));
+    const merged = { ...(tpl.default_params || {}) };
+    if (tpl.extra_body) merged.extra_body = tpl.extra_body;
+    setExtraBodyJson(JSON.stringify(tpl.extra_body || {}, null, 2));
     setParamsJson(JSON.stringify(merged, null, 2));
     setJsonError(null);
   }
