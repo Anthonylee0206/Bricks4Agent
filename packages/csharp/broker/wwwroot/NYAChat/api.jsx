@@ -54,7 +54,8 @@ async function apiCall(method, path, params) {
       } else if (res.status === 403) {
         window.showToast && window.showToast(`權限不足：${json.message}`, 'error');
       } else {
-        const traceHint = json.trace_id ? `  trace: ${json.trace_id}` : '';
+        const trace = json.traceId || json.trace_id;
+        const traceHint = trace ? `  trace: ${trace}` : '';
         window.showToast && window.showToast(`錯誤：${json.message}${traceHint}`, 'error');
       }
     }

@@ -16,7 +16,7 @@ The group uses `BrokerAuthPolicy.LocalAdminSession`: the broker auth middleware 
 
 Every request first passes `TryResolveRouteAuthorization(method, path)`. It maps each method + path shape to either a list of broker permissions (the session must hold **any one** of them) or to **super_admin only** (the session's operator role must be `super_admin`; permissions are not consulted).
 
-- A method/path combination that the resolver does not know is rejected with `403` `Forbidden: unknown NyaChat admin route.` before any handler runs. This includes every role/capability route (see the last section).
+- A method/path combination that the resolver does not know is rejected with `403` `Forbidden: unknown NyaChat admin route.` before any handler runs. This includes every role/capability route (see "Role administration (removed)").
 - Missing permission: `403` `Forbidden: permission '<p>' required.` or `Forbidden: one of [<p1>, <p2>] required.`
 - Not super_admin on a super-admin route: `403` `Forbidden: super_admin role required.`
 
@@ -1689,129 +1689,9 @@ Validation: only the keys listed in 53; duplicate keys rejected; values must mat
 
 ---
 
-## Roles & Capabilities (defined, not mounted)
+## Role administration (removed)
 
-The handlers below exist in `MapRoleAdmin` but **`MapRoleAdmin` is never called**, so these routes are not registered. In addition, `TryResolveRouteAuthorization` deliberately denies `/roles`, `/roles/{id}`, `/capabilities`, `/users/{userId}/roles` and `/users/{userId}/roles/{roleId}` for every method (covered by `RoleRoutes_AreDeniedForEveryMethod`), since role administration moved back to the broker. Calling them today does not reach these handlers (no route is registered). They are documented only so the code and this reference stay in sync.
-
----
-
-### 63 · GET /local-admin/nya/roles
-
-**Auth**: not reachable (route denied)
-
-**Response `data`**
-```json
-{ "roles": [ { "role_id": "...", "display_name": "...", "allowed_task_types": ["..."], "capability_count": 3, "all_capabilities": false, "active_binding_count": 1, "built_in": false } ] }
-```
-
----
-
-### 64 · GET /local-admin/nya/roles/{id}
-
-**Auth**: not reachable (route denied)
-
-**Response `data`**
-```json
-{ "role_id": "...", "display_name": "...", "allowed_task_types": ["..."], "capability_ids": ["..."], "all_capabilities": false, "version": 1, "built_in": false }
-```
-
-**Errors**: 404 (role not found)
-
----
-
-### 65 · POST /local-admin/nya/roles
-
-**Auth**: not reachable (route denied)
-
-**Request Body**: `role_id` (string), `display_name` (string), `allowed_task_types` (string[]), `capability_ids` (string[])
-
-**Response `data`**
-```json
-{ "role_id": "..." }
-```
-
-**Errors**: 400 (service validation)
-
----
-
-### 66 · PUT /local-admin/nya/roles/{id}
-
-**Auth**: not reachable (route denied)
-
-**Request Body**: `display_name`, `allowed_task_types`, `capability_ids` (as in 65)
-
-**Response `data`**
-```json
-{ "role_id": "..." }
-```
-
-**Errors**: 400 (service validation)
-
----
-
-### 67 · DELETE /local-admin/nya/roles/{id}
-
-**Auth**: not reachable (route denied)
-
-**Response `data`**
-```json
-{ "role_id": "..." }
-```
-
-**Errors**: 409 (service refused the delete)
-
----
-
-### 68 · GET /local-admin/nya/capabilities
-
-**Auth**: not reachable (route denied)
-
-**Response `data`**
-```json
-{ "capabilities": [ { "capability_id": "...", "route": "...", "resource_type": "...", "risk_level": "...", "approval_policy": "..." } ] }
-```
-
----
-
-### 69 · GET /local-admin/nya/users/{userId}/roles
-
-**Auth**: not reachable (route denied)
-
-**Response `data`**
-```json
-{ "principal_id": "...", "roles": [ { "role_id": "...", "display_name": "...", "capability_count": 3, "granted_at": "...", "binding_id": "..." } ] }
-```
-
----
-
-### 70 · POST /local-admin/nya/users/{userId}/roles
-
-**Auth**: not reachable (route denied)
-
-**Request Body**
-```json
-{ "role_id": "..." }
-```
-
-**Response `data`**
-```json
-{ "user_id": "line:Uabc123...", "role_id": "..." }
-```
-
-**Errors**: 400 (missing `role_id`, or assignment refused)
-
----
-
-### 71 · DELETE /local-admin/nya/users/{userId}/roles/{roleId}
-
-**Auth**: not reachable (route denied)
-
-**Response `data`**
-```json
-{ "user_id": "line:Uabc123...", "role_id": "..." }
-```
-
-**Errors**: 404 (no active binding)
+Role and capability administration moved back to the broker ("LINE 與使用者" and "權限管理" pages). NyaChat registers no `/roles`, `/roles/{id}`, `/capabilities`, `/users/{userId}/roles` or `/users/{userId}/roles/{roleId}` routes, and `TryResolveRouteAuthorization` still denies those paths for every method with `403` (covered by `RoleRoutes_AreDeniedForEveryMethod`).
 
 ---
 
@@ -1881,12 +1761,3 @@ The handlers below exist in `MapRoleAdmin` but **`MapRoleAdmin` is never called*
 | 60 | GET | `/tools/availability` | status/audit/user | Per-user tool availability |
 | 61 | POST | `/tools/{toolId}/toggle` | sys.write | Enable/disable a tool |
 | 62 | GET | `/status` | sys.read | Engine status |
-| 63 | GET | `/roles` | not mounted | List roles |
-| 64 | GET | `/roles/{id}` | not mounted | Role detail |
-| 65 | POST | `/roles` | not mounted | Create role |
-| 66 | PUT | `/roles/{id}` | not mounted | Update role |
-| 67 | DELETE | `/roles/{id}` | not mounted | Delete role |
-| 68 | GET | `/capabilities` | not mounted | List capabilities |
-| 69 | GET | `/users/{userId}/roles` | not mounted | User role bindings |
-| 70 | POST | `/users/{userId}/roles` | not mounted | Assign role |
-| 71 | DELETE | `/users/{userId}/roles/{roleId}` | not mounted | Revoke role |
