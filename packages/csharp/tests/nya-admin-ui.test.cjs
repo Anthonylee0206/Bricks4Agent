@@ -24,6 +24,7 @@ for (const name of fs.readdirSync(root).filter(n => /\.(css|html)$/.test(n))) {
 const shell = fs.readFileSync(path.join(repo, 'packages/csharp/broker/wwwroot/admin-shell.js'), 'utf8');
 assert.equal(Babel.transform(shell, { ast: true, code: false }).ast.comments.length, 0);
 const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
+assert.ok(!fs.existsSync(path.join(root, 'PageH.jsx')));
 assert.ok(!/src=["']PageH\.jsx/.test(html));
 assert.ok(html.includes("fetch('/api/v1/local-admin/status'"));
 assert.ok(!html.includes('/local-admin/nya/status'));
