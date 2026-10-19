@@ -95,6 +95,6 @@
 ## 三、共用元件（components.jsx、ui.jsx）
 
 - `showConfirm(title, message)`：所有刪除、清除、切換類操作前的確認對話框。
-- `showToast(message, type)`：操作結果提示；錯誤訊息附上 `trace_id`。
+- `showToast(message, type)`：操作結果提示。`apiCall()` 想在錯誤訊息後附上 trace，但它讀的是 `json.trace_id`，而回應信封實際為 camelCase 的 `traceId`，因此目前不會顯示。
 - `PageHeader`、`Panel`、`Table`、`Pagination`、`Modal`、`JsonBlock`、`DangerZone` 等版面元件。
 - `apiCall(method, path, params)`（api.jsx）：GET／DELETE 參數走 query string，其他方法走 JSON body；統一處理 401／403 與錯誤提示。
