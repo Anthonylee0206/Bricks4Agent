@@ -18,6 +18,11 @@
     <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.10" />
     <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.1.12" />
     <PackageReference Include="Microsoft.Data.SqlClient" Version="6.1.1" />
+    <!-- [修正 2026-10 AnthonyLee] Microsoft.Data.SqlClient 6.1.1 間接帶入 System.Security.Cryptography.Pkcs 9.0.4，
+         受 CVE-2026-84008（高）、CVE-2026-70162（中）影響（2026-10-13 公布，9.0.0–9.0.20）。CI 建置時把警告當錯誤（warnaserror），
+         NU1902/NU1903 會讓所有 .NET 建置失敗。固定到修補版 9.0.21：同一個套件、同一條 9.0 線，沒有新增依賴。
+         日後 SqlClient 升級並自帶修補版時可移除。 -->
+    <PackageReference Include="System.Security.Cryptography.Pkcs" Version="9.0.21" />
     <PackageReference Include="MySqlConnector" Version="2.4.0" />
     <PackageReference Include="Npgsql" Version="8.0.6" />
   </ItemGroup>
