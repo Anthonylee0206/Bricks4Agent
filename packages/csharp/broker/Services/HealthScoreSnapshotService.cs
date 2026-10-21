@@ -20,7 +20,8 @@ public class HealthScoreSnapshotService : BackgroundService
     private readonly LeaderGuard _guard;
     private readonly ILogger<HealthScoreSnapshotService> _logger;
 
-    private static readonly TimeSpan TickInterval = TimeSpan.FromMinutes(5);
+    /// <summary>快照間隔。異常偵測報告用它判斷快照是否中斷（R12）。</summary>
+    public static readonly TimeSpan TickInterval = TimeSpan.FromMinutes(5);
     private static readonly TimeSpan Retention = TimeSpan.FromDays(7);
 
     public HealthScoreSnapshotService(

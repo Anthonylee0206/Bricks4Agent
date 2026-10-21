@@ -621,9 +621,17 @@ builder.Services.AddSingleton<IPlanEngine>(sp =>
         sp.GetRequiredService<IAuditService>(),
         sp.GetRequiredService<IObservationService>()));
 
+// [新增 2026-10 AnthonyLee] 異常偵測報告：規則判斷異常、LLM 只寫敘述（Services/Observability）。
+// 排程預設關閉（Observability:IncidentReport:Enabled），只註冊服務不改變既有行為。
+builder.Services.AddIncidentReporting(builder.Configuration);
+
 var app = builder.Build();
 
 app.Logger.LogInformation("Broker database path: {DbPath}", dbPath);
+
+// [新增 2026-10 AnthonyLee] API 回應狀態碼計數，必須在最外層：
+// 稽核中介層排在加密與驗證之後，被前面擋下的 4xx 不會進 audit_events，這裡補上計數（只計數、不改回應）。
+app.UseHttpStatusMetrics();
 
 app.Use(async (context, next) =>
 {
@@ -971,6 +979,11 @@ ArtifactDownloadEndpoints.Map(api);
 PortalEndpoints.Map(api);
 LocalAdminEndpoints.Map(api);
 AgentEndpoints.Map(api);
+// [新增 2026-10 AnthonyLee] 異常偵測報告的管理員 API；依賴的服務一律註冊，不必 gate 在 poolEnabled。
+IncidentReportEndpoints.Map(api);
+// [新增 2026-10 AnthonyLee] 同一份觀測資料（健康分數、worker、LLM 統計、異常報告）照 local-admin 規格再開一組，
+// 管理後台用 cookie 工作階段就叫得到；pool 相關服務在 handler 內取用，不必 gate 在 poolEnabled。
+LocalAdminObservabilityEndpoints.Map(api);
 // [MONITORING EXTRACTION] health/worker endpoints 的 handler 依賴 IWorkerRegistry /
 // HealthScoreService 等 FunctionPool 服務。FunctionPool 關閉時這些服務不註冊,若 endpoint
 // 仍註冊,Minimal API 會把未註冊的服務參數推斷成 body,GET 端點 metadata inference 即拋

@@ -25,35 +25,7 @@ public static class HealthCheckEndpoints
         //   3. 四個探測依序 await、沒有預算，一個卡住的 worker 會拖住整個請求。
         // 改成回報 registry 已經掌握的狀態（心跳、併發、State）：不產生副作用、不繞過治理、不會被卡住。
         hc.MapGet("/workers", (IWorkerRegistry registry, PoolConfig poolConfig) =>
-        {
-            var now = DateTime.UtcNow;
-            var workers = registry.GetAllWorkers()
-                .OrderBy(w => w.WorkerId, StringComparer.Ordinal)
-                .Select(w => DescribeWorker(w, now, poolConfig.HeartbeatTimeout))
-                .ToList();
-
-            var uptime = now - Process.GetCurrentProcess().StartTime.ToUniversalTime();
-
-            return Results.Ok(ApiResponseHelper.Success(new
-            {
-                broker_status = "running",
-                uptime_seconds = (int)uptime.TotalSeconds,
-                uptime_display = $"{(int)uptime.TotalHours}h {uptime.Minutes}m {uptime.Seconds}s",
-                worker_count = workers.Count,
-                available_count = workers.Count(w => w.Available),
-                workers = workers.Select(w => new
-                {
-                    worker_id = w.WorkerId,
-                    capabilities = w.Capabilities,
-                    state = w.State,
-                    status = w.Status,
-                    available = w.Available,
-                    heartbeat_age_seconds = w.HeartbeatAgeSeconds,
-                    active_tasks = w.ActiveTasks,
-                    max_concurrent = w.MaxConcurrent,
-                }),
-            }));
-        });
+            Results.Ok(ApiResponseHelper.Success(BuildWorkersPayload(registry, poolConfig))));
 
         // GET /api/v1/health/llm — LLM 代理呼叫統計(呼叫數、成功率、延遲、各模型、趨勢)
         //
@@ -61,104 +33,148 @@ public static class HealthCheckEndpoints
         // 收集到的數字等於沒有人看得到。這裡只回彙總與趨勢,刻意不回 Recent()(單次呼叫明細含截短的
         // 工具參數,可能帶到使用者內容)。與本群組其他端點一樣只限管理員。
         hc.MapGet("/llm", (HttpContext ctx, LlmProxyMetrics metrics) =>
-        {
-            var bucketMinutes = int.TryParse(ctx.Request.Query["bucket_minutes"].ToString(), out var bm)
-                ? Math.Clamp(bm, 1, 60) : 10;
-            var bucketCount = int.TryParse(ctx.Request.Query["buckets"].ToString(), out var bc)
-                ? Math.Clamp(bc, 1, 144) : 24;
-            var s = metrics.Snapshot();
-            return Results.Ok(ApiResponseHelper.Success(new
-            {
-                started_at       = s.StartedAt,
-                total_calls      = s.TotalCalls,
-                success_calls    = s.SuccessCalls,
-                failure_calls    = s.FailureCalls,
-                success_rate_pct = s.SuccessRatePct,
-                avg_latency_ms   = s.AvgLatencyMs,
-                total_eval_tokens = s.TotalEvalTokens,
-                per_model = s.PerModel.Select(m => new
-                {
-                    model          = m.Model,
-                    calls          = m.Calls,
-                    success_calls  = m.SuccessCalls,
-                    eval_tokens    = m.EvalTokens,
-                    avg_latency_ms = m.AvgLatencyMs,
-                    last_call_at   = m.LastTs,
-                }),
-                bucket_minutes = bucketMinutes,
-                trend = metrics.Trend(bucketMinutes, bucketCount),
-            }));
-        });
+            Results.Ok(ApiResponseHelper.Success(BuildLlmPayload(metrics, ctx.Request.Query))));
 
         // GET /api/v1/health/score/history?since_minutes=360 — Health Score 時序
         hc.MapGet("/score/history", (
             HttpContext ctx, Broker.Services.HealthScoreSnapshotService snapSvc) =>
-        {
-            var sinceMin = int.TryParse(ctx.Request.Query["since_minutes"].ToString(), out var s)
-                ? Math.Clamp(s, 5, 10080) : 360;  // default 6h, max 7d
-            var history = snapSvc.GetHistory(sinceMin);
-            return Results.Ok(ApiResponseHelper.Success(new
-            {
-                since_minutes = sinceMin,
-                count         = history.Count,
-                snapshots = history.Select(h => new
-                {
-                    captured_at    = h.CapturedAt,
-                    overall_score  = h.OverallScore,
-                    status         = h.OverallStatus,
-                    worker_count   = h.WorkerCount,
-                    healthy        = h.HealthyCount,
-                    degraded       = h.DegradedCount,
-                    critical       = h.CriticalCount,
-                }),
-            }));
-        });
+            Results.Ok(ApiResponseHelper.Success(BuildScoreHistoryPayload(snapSvc, ctx.Request.Query))));
 
         // GET /api/v1/health/score — Worker 健康綜合分數（0-100、含三個子分量）
         hc.MapGet("/score", async (
             Broker.Services.HealthScoreService svc, CancellationToken ct) =>
+            Results.Ok(ApiResponseHelper.Success(await BuildScorePayloadAsync(svc, ct))));
+    }
+
+    // ── 回應內容 ──
+    // 2026-10 抽出來共用：/api/v1/health/*（scoped token，給 API 用戶端）與
+    // /api/v1/local-admin/observability/*（管理後台的 cookie 工作階段）回傳同一份資料。
+
+    public static object BuildWorkersPayload(IWorkerRegistry registry, PoolConfig poolConfig)
+    {
+        var now = DateTime.UtcNow;
+        var workers = registry.GetAllWorkers()
+            .OrderBy(w => w.WorkerId, StringComparer.Ordinal)
+            .Select(w => DescribeWorker(w, now, poolConfig.HeartbeatTimeout))
+            .ToList();
+
+        var uptime = now - Process.GetCurrentProcess().StartTime.ToUniversalTime();
+
+        return new
         {
-            var report = await svc.ComputeAsync(ct);
-            return Results.Ok(ApiResponseHelper.Success(new
+            broker_status = "running",
+            uptime_seconds = (int)uptime.TotalSeconds,
+            uptime_display = $"{(int)uptime.TotalHours}h {uptime.Minutes}m {uptime.Seconds}s",
+            worker_count = workers.Count,
+            available_count = workers.Count(w => w.Available),
+            workers = workers.Select(w => new
             {
-                generated_at   = report.GeneratedAt,
-                overall_score  = report.OverallScore,
-                overall_status = report.OverallStatus,
-                worker_count   = report.WorkerCount,
-                healthy_count  = report.HealthyCount,
-                degraded_count = report.DegradedCount,
-                critical_count = report.CriticalCount,
-                workers = report.Workers.Select(w => new
+                worker_id = w.WorkerId,
+                capabilities = w.Capabilities,
+                state = w.State,
+                status = w.Status,
+                available = w.Available,
+                heartbeat_age_seconds = w.HeartbeatAgeSeconds,
+                active_tasks = w.ActiveTasks,
+                max_concurrent = w.MaxConcurrent,
+            }),
+        };
+    }
+
+    public static object BuildLlmPayload(LlmProxyMetrics metrics, IQueryCollection query)
+    {
+        var bucketMinutes = int.TryParse(query["bucket_minutes"].ToString(), out var bm)
+            ? Math.Clamp(bm, 1, 60) : 10;
+        var bucketCount = int.TryParse(query["buckets"].ToString(), out var bc)
+            ? Math.Clamp(bc, 1, 144) : 24;
+        var s = metrics.Snapshot();
+        return new
+        {
+            started_at       = s.StartedAt,
+            total_calls      = s.TotalCalls,
+            success_calls    = s.SuccessCalls,
+            failure_calls    = s.FailureCalls,
+            success_rate_pct = s.SuccessRatePct,
+            avg_latency_ms   = s.AvgLatencyMs,
+            total_eval_tokens = s.TotalEvalTokens,
+            per_model = s.PerModel.Select(m => new
+            {
+                model          = m.Model,
+                calls          = m.Calls,
+                success_calls  = m.SuccessCalls,
+                eval_tokens    = m.EvalTokens,
+                avg_latency_ms = m.AvgLatencyMs,
+                last_call_at   = m.LastTs,
+            }),
+            bucket_minutes = bucketMinutes,
+            trend = metrics.Trend(bucketMinutes, bucketCount),
+        };
+    }
+
+    public static object BuildScoreHistoryPayload(Broker.Services.HealthScoreSnapshotService snapSvc, IQueryCollection query)
+    {
+        var sinceMin = int.TryParse(query["since_minutes"].ToString(), out var s)
+            ? Math.Clamp(s, 5, 10080) : 360;  // default 6h, max 7d
+        var history = snapSvc.GetHistory(sinceMin);
+        return new
+        {
+            since_minutes = sinceMin,
+            count         = history.Count,
+            snapshots = history.Select(h => new
+            {
+                captured_at    = h.CapturedAt,
+                overall_score  = h.OverallScore,
+                status         = h.OverallStatus,
+                worker_count   = h.WorkerCount,
+                healthy        = h.HealthyCount,
+                degraded       = h.DegradedCount,
+                critical       = h.CriticalCount,
+            }),
+        };
+    }
+
+    public static async Task<object> BuildScorePayloadAsync(Broker.Services.HealthScoreService svc, CancellationToken ct)
+    {
+        var report = await svc.ComputeAsync(ct);
+        return new
+        {
+            generated_at   = report.GeneratedAt,
+            overall_score  = report.OverallScore,
+            overall_status = report.OverallStatus,
+            worker_count   = report.WorkerCount,
+            healthy_count  = report.HealthyCount,
+            degraded_count = report.DegradedCount,
+            critical_count = report.CriticalCount,
+            workers = report.Workers.Select(w => new
+            {
+                worker_id    = w.WorkerId,
+                capabilities = w.Capabilities,
+                state        = w.State,
+                score        = w.Score,
+                status       = w.Status,
+                heartbeat = w.Heartbeat == null ? null : new
                 {
-                    worker_id    = w.WorkerId,
-                    capabilities = w.Capabilities,
-                    state        = w.State,
-                    score        = w.Score,
-                    status       = w.Status,
-                    heartbeat = w.Heartbeat == null ? null : new
-                    {
-                        score = w.Heartbeat.Score,
-                        label = w.Heartbeat.Label,
-                        age_seconds = w.Heartbeat.AgeSeconds,
-                    },
-                    dispatch = w.Dispatch == null ? null : (object)new
-                    {
-                        score = w.Dispatch.Score,
-                        label = w.Dispatch.Label,
-                        succeeded = w.Dispatch.Succeeded,
-                        failed = w.Dispatch.Failed,
-                        success_rate_pct = w.Dispatch.SuccessRatePct,
-                    },
-                    resource = w.Resource == null ? null : (object)new
-                    {
-                        score = w.Resource.Score,
-                        label = w.Resource.Label,
-                        cpu_pct = w.Resource.CpuPct,
-                        mem_pct = w.Resource.MemPct,
-                    },
-                }),
-            }));
-        });
+                    score = w.Heartbeat.Score,
+                    label = w.Heartbeat.Label,
+                    age_seconds = w.Heartbeat.AgeSeconds,
+                },
+                dispatch = w.Dispatch == null ? null : (object)new
+                {
+                    score = w.Dispatch.Score,
+                    label = w.Dispatch.Label,
+                    succeeded = w.Dispatch.Succeeded,
+                    failed = w.Dispatch.Failed,
+                    success_rate_pct = w.Dispatch.SuccessRatePct,
+                },
+                resource = w.Resource == null ? null : (object)new
+                {
+                    score = w.Resource.Score,
+                    label = w.Resource.Label,
+                    cpu_pct = w.Resource.CpuPct,
+                    mem_pct = w.Resource.MemPct,
+                },
+            }),
+        };
     }
 
     public sealed record WorkerStatusView(

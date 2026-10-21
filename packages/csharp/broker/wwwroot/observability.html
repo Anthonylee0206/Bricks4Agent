@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>B4A 系統健康</title>
+<style>
+/* 配色與元件沿用 line-admin.html，兩頁看起來一致 */
+:root{
+  --bg:#0f1117;--panel:#171b26;--panel-2:#202635;--border:#30384b;--text:#e7ebf5;--muted:#97a0b8;--accent:#53a7ff;--danger:#ff6b6b;--warn:#ffbf69;--ok:#56d39b;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font-family:"Segoe UI","Noto Sans TC","Microsoft JhengHei",system-ui,sans-serif}
+button,input{font:inherit}
+a{color:var(--accent)}
+.page{max-width:1280px;margin:0 auto;padding:16px;display:flex;flex-direction:column;gap:16px}
+.header{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}
+.brand{font-size:20px;font-weight:700}
+.muted{color:var(--muted)}
+.small{font-size:12px}
+.mono{font-family:Consolas,"Cascadia Mono","Courier New",monospace}
+.button{border:1px solid var(--border);background:var(--panel);color:var(--text);border-radius:10px;padding:8px 12px;cursor:pointer}
+.button.primary{background:#1a3558;border-color:#2f5d96}.button:disabled{opacity:.5;cursor:not-allowed}
+.tag{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border:1px solid var(--border);border-radius:999px;background:var(--panel);font-size:12px}
+.tag.ok{color:var(--ok)}.tag.bad{color:var(--danger);border-color:#7b303a}.tag.warn{color:var(--warn);border-color:#7b5f2c}
+.grid{display:grid;gap:16px}.grid.two{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}.grid.reports{grid-template-columns:360px minmax(0,1fr)}
+/* 欄寬用 minmax(0,1fr)：長路徑、ID 不會把欄位撐到超出畫面 */
+.grid>*,.stack>*{min-width:0}
+.finding,.narrative,.item,.notice{overflow-wrap:anywhere}
+ul{margin:4px 0;padding-left:20px}
+.panel{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:14px;min-width:0}
+.panel h2{margin:0 0 12px 0;font-size:18px}.panel h3{margin:14px 0 8px 0;font-size:15px}
+.stack{display:flex;flex-direction:column;gap:10px}.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.list{border:1px solid var(--border);border-radius:10px;overflow:auto;max-height:520px;background:var(--panel-2)}
+.item{padding:10px 12px;border-bottom:1px solid var(--border);cursor:pointer}.item:last-child{border-bottom:none}.item:hover,.item.active{background:#263046}
+.item-title{font-weight:600;margin-bottom:4px}
+.notice{padding:10px 12px;border-radius:10px;background:#132033;border:1px solid #28476f}
+.error{color:var(--danger)}
+.metric{font-size:28px;font-weight:700;font-variant-numeric:tabular-nums}
+.table-wrap{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{text-align:left;padding:8px;border-bottom:1px solid var(--border)}
+th,td.mono{white-space:nowrap}
+th{color:var(--muted);font-weight:600}
+td.num{font-variant-numeric:tabular-nums}
+.finding{border:1px solid var(--border);border-radius:10px;padding:10px 12px;background:var(--panel-2)}
+.narrative{white-space:pre-wrap;line-height:1.6;background:var(--panel-2);border:1px solid var(--border);border-radius:10px;padding:10px 12px}
+input[type=number]{width:90px;border:1px solid var(--border);border-radius:10px;background:var(--panel-2);color:var(--text);padding:8px 10px}
+.hidden{display:none}
+@media (max-width:1000px){.grid.two,.grid.reports{grid-template-columns:minmax(0,1fr)}}
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="header">
+    <div>
+      <div class="brand">系統健康與異常報告</div>
+      <div class="muted small">worker 健康分數、LLM 呼叫統計、規則判定的異常偵測報告</div>
+    </div>
+    <div class="row">
+      <span class="small muted" id="who"></span>
+      <button class="button" id="refresh-all">全部重新整理</button>
+      <a class="button" href="/line-admin.html">← 回管理後台</a>
+    </div>
+  </div>
+
+  <div id="gate" class="notice hidden"></div>
+
+  <div id="content" class="stack hidden">
+    <div class="grid two">
+      <section class="panel stack">
+        <div class="row" style="justify-content:space-between">
+          <h2>Worker 健康分數</h2>
+          <span id="health-tag" class="tag">—</span>
+        </div>
+        <div class="row">
+          <div><div class="metric" id="health-score">—</div><div class="small muted">綜合分數（0–100）</div></div>
+          <div><div class="metric" id="health-workers">—</div><div class="small muted">在線 worker</div></div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Worker</th><th>狀態</th><th>分數</th><th>心跳</th><th>派發成功率</th><th>資源</th></tr></thead>
+            <tbody id="health-rows"><tr><td colspan="6" class="muted">載入中</td></tr></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel stack">
+        <h2>LLM 呼叫統計</h2>
+        <div class="row">
+          <div><div class="metric" id="llm-calls">—</div><div class="small muted">呼叫次數（broker 啟動後）</div></div>
+          <div><div class="metric" id="llm-success">—</div><div class="small muted">成功率</div></div>
+          <div><div class="metric" id="llm-latency">—</div><div class="small muted">平均延遲</div></div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>模型</th><th>呼叫</th><th>成功</th><th>平均延遲</th><th>最後呼叫</th></tr></thead>
+            <tbody id="llm-rows"><tr><td colspan="5" class="muted">載入中</td></tr></tbody>
+          </table>
+        </div>
+        <div class="small muted">統計存在記憶體，broker 重啟後歸零。</div>
+      </section>
+    </div>
+
+    <section class="panel stack">
+      <div class="row" style="justify-content:space-between">
+        <h2>異常偵測報告</h2>
+        <div class="row">
+          <label class="small muted" for="run-minutes">最近</label>
+          <input type="number" id="run-minutes" min="1" max="1440" value="15">
+          <span class="small muted">分鐘</span>
+          <button class="button primary" id="run-report">立即產生報告</button>
+        </div>
+      </div>
+      <div class="small muted">有沒有異常由規則判定；LLM 只負責把規則結果寫成敘述。每份報告都會列出看了什麼（涵蓋範圍）與看不到什麼（盲點）。</div>
+      <div class="grid reports">
+        <div class="list" id="report-list"><div class="item muted">載入中</div></div>
+        <div id="report-detail" class="stack"><div class="notice">選一份報告查看詳情。</div></div>
+      </div>
+    </section>
+  </div>
+</div>
+
+<script>
+const MONITOR_PERMISSION = "system.monitor.read";
+const API = "/api/v1/local-admin";
+let selectedReportId = null;
+
+const byId = id => document.getElementById(id);
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;").replaceAll("'", "&#39;");
+}
+
+function localTime(value) {
+  return value ? new Date(value).toLocaleString("zh-TW", { hour12: false }) : "—";
+}
+
+function severityTag(severity) {
+  if (severity === "critical") return '<span class="tag bad">Critical</span>';
+  if (severity === "warning") return '<span class="tag warn">Warning</span>';
+  return '<span class="tag ok">無異常</span>';
+}
+
+function healthTag(status) {
+  const cls = status === "healthy" ? "ok" : status === "degraded" ? "warn" : "bad";
+  const label = { healthy: "healthy", degraded: "degraded", critical: "critical", no_workers: "沒有 worker" }[status] || status;
+  return `<span class="tag ${cls}">${escapeHtml(label)}</span>`;
+}
+
+// 與 line-admin.html 相同：同網域 cookie 工作階段、明文 JSON，失敗時丟出帶狀態碼的錯誤
+async function request(path, options = {}) {
+  const response = await fetch(API + path, {
+    headers: { "Content-Type": "application/json; charset=UTF-8" },
+    ...options
+  });
+  const text = await response.text();
+  let payload = null;
+  if (text) {
+    try { payload = JSON.parse(text); } catch { payload = text; }
+  }
+  if (!response.ok) {
+    const error = new Error(payload?.message || response.statusText || "request_failed");
+    error.status = response.status;
+    throw error;
+  }
+  return payload?.data ?? payload;
+}
+
+function showGate(html) {
+  byId("gate").innerHTML = html;
+  byId("gate").classList.remove("hidden");
+  byId("content").classList.add("hidden");
+}
+
+async function checkAccess() {
+  const status = await request("/status");
+  if (!status?.authenticated) {
+    showGate('尚未登入。請先在 <a href="/line-admin.html">管理後台</a> 登入（管理後台只接受本機連線），再回到這一頁。');
+    return false;
+  }
+  if (!(status.permissions || []).includes(MONITOR_PERMISSION)) {
+    showGate(`目前帳號（${escapeHtml(status.username)}，${escapeHtml(status.role)}）沒有 <span class="mono">${MONITOR_PERMISSION}</span> 權限。`);
+    return false;
+  }
+  byId("who").textContent = `${status.username}（${status.role}）`;
+  byId("gate").classList.add("hidden");
+  byId("content").classList.remove("hidden");
+  return true;
+}
+
+async function loadHealth() {
+  try {
+    const data = await request("/observability/health-score");
+    byId("health-score").textContent = data.overall_score;
+    byId("health-workers").textContent = data.worker_count;
+    byId("health-tag").outerHTML = healthTag(data.overall_status).replace("<span", '<span id="health-tag"');
+    byId("health-rows").innerHTML = data.workers.length
+      ? data.workers.map(w => `<tr>
+          <td class="mono">${escapeHtml(w.worker_id)}</td>
+          <td>${healthTag(w.status)}</td>
+          <td class="num">${w.score}</td>
+          <td>${w.heartbeat ? `${escapeHtml(w.heartbeat.label)}（${w.heartbeat.age_seconds}s）` : "—"}</td>
+          <td class="num">${w.dispatch ? `${w.dispatch.success_rate_pct}%（${w.dispatch.succeeded}/${w.dispatch.succeeded + w.dispatch.failed}）` : "—"}</td>
+          <td class="num">${w.resource ? `CPU ${w.resource.cpu_pct}%／RAM ${w.resource.mem_pct}%` : "—"}</td>
+        </tr>`).join("")
+      : '<tr><td colspan="6" class="muted">目前沒有任何 worker 在線。</td></tr>';
+  } catch (error) {
+    const message = error.status === 503 ? "Function Pool 未啟用，沒有 worker 健康資料。" : `讀取失敗：${error.message}`;
+    byId("health-rows").innerHTML = `<tr><td colspan="6" class="muted">${escapeHtml(message)}</td></tr>`;
+  }
+}
+
+async function loadLlm() {
+  try {
+    const data = await request("/observability/llm?bucket_minutes=10&buckets=6");
+    byId("llm-calls").textContent = data.total_calls;
+    byId("llm-success").textContent = data.total_calls ? `${data.success_rate_pct.toFixed(0)}%` : "—";
+    byId("llm-latency").textContent = data.total_calls ? `${data.avg_latency_ms} ms` : "—";
+    byId("llm-rows").innerHTML = data.per_model.length
+      ? data.per_model.map(m => `<tr>
+          <td class="mono">${escapeHtml(m.model)}</td>
+          <td class="num">${m.calls}</td>
+          <td class="num">${m.success_calls}</td>
+          <td class="num">${m.avg_latency_ms} ms</td>
+          <td>${localTime(m.last_call_at)}</td>
+        </tr>`).join("")
+      : '<tr><td colspan="5" class="muted">broker 啟動後還沒有 LLM 呼叫。</td></tr>';
+  } catch (error) {
+    byId("llm-rows").innerHTML = `<tr><td colspan="5" class="muted">讀取失敗：${escapeHtml(error.message)}</td></tr>`;
+  }
+}
+
+async function loadReports() {
+  const list = byId("report-list");
+  try {
+    const data = await request("/observability/incident-reports?limit=30");
+    if (!data.items.length) {
+      list.innerHTML = '<div class="item muted">還沒有報告。按「立即產生報告」產生第一份。</div>';
+      return;
+    }
+    list.innerHTML = data.items.map(r => `
+      <div class="item${r.report_id === selectedReportId ? " active" : ""}" data-report="${escapeHtml(r.report_id)}">
+        <div class="row" style="justify-content:space-between">
+          <span class="item-title">${localTime(r.window_start)} – ${localTime(r.window_end).split(" ").pop()}</span>
+          ${severityTag(r.max_severity)}
+        </div>
+        <div class="small muted">${r.trigger === "manual" ? "手動" : "排程"} · ${r.finding_count} 項異常${r.rules.length ? "：" + escapeHtml(r.rules.join(" ")) : ""}</div>
+      </div>`).join("");
+    list.querySelectorAll("[data-report]").forEach(el =>
+      el.addEventListener("click", () => showReport(el.dataset.report)));
+  } catch (error) {
+    list.innerHTML = `<div class="item muted">讀取失敗：${escapeHtml(error.message)}</div>`;
+  }
+}
+
+const NARRATIVE_STATUS = {
+  ok: "LLM 敘述",
+  incomplete: "LLM 敘述（不完整：漏了部分規則）",
+  failed: "LLM 敘述失敗，以下只有規則結果",
+  llm_unavailable: "LLM 未啟用，以下只有規則結果",
+  disabled: "敘述已關閉，以下只有規則結果",
+  skipped_no_findings: "沒有異常，不呼叫 LLM"
+};
+
+async function showReport(reportId) {
+  selectedReportId = reportId;
+  document.querySelectorAll("#report-list .item").forEach(el =>
+    el.classList.toggle("active", el.dataset.report === reportId));
+  const detail = byId("report-detail");
+  try {
+    const r = await request(`/observability/incident-reports/${encodeURIComponent(reportId)}`);
+    const findings = r.findings.length
+      ? r.findings.map(f => `
+          <div class="finding stack">
+            <div class="row" style="justify-content:space-between">
+              <span class="item-title">${escapeHtml(f.rule_id)}　${escapeHtml(f.title)}</span>
+              ${severityTag(f.severity)}
+            </div>
+            <div>${escapeHtml(f.detail)}</div>
+            ${f.evidence.length ? `<div class="small muted">相關 ID：<span class="mono">${escapeHtml(f.evidence.join("、"))}</span></div>` : ""}
+          </div>`).join("")
+      : '<div class="notice">這個時段規則沒有偵測到異常。（不代表一定正常，請一併看下方的涵蓋範圍與盲點。）</div>';
+    const scanned = Object.entries(r.coverage.scanned).map(([k, v]) => `${escapeHtml(k)} ${v}`).join("、");
+    const notApplicable = Object.entries(r.coverage.rules_not_applicable)
+      .map(([rule, why]) => `<li>${escapeHtml(rule)}：${escapeHtml(why)}</li>`).join("");
+    const notes = r.coverage.notes.map(n => `<li>${escapeHtml(n)}</li>`).join("");
+    const blindSpots = r.blind_spots.map(b => `<li>${escapeHtml(b)}</li>`).join("");
+    detail.innerHTML = `
+      <div class="row" style="justify-content:space-between">
+        <div class="small muted">${localTime(r.window_start)} – ${localTime(r.window_end)} · ${r.trigger === "manual" ? "手動" : "排程"} · ${r.duration_ms} ms</div>
+        ${severityTag(r.max_severity)}
+      </div>
+      ${findings}
+      <h3>${escapeHtml(NARRATIVE_STATUS[r.narrative_status] || r.narrative_status)}${r.narrative_model ? `（${escapeHtml(r.narrative_model)}）` : ""}</h3>
+      ${r.narrative ? `<div class="narrative">${escapeHtml(r.narrative)}</div>` : ""}
+      <h3>涵蓋範圍</h3>
+      <div class="small">掃描筆數：${scanned || "—"}</div>
+      ${notApplicable ? `<div class="small muted">這次沒有執行的規則：</div><ul class="small">${notApplicable}</ul>` : ""}
+      ${notes ? `<ul class="small">${notes}</ul>` : ""}
+      <h3>盲點（這份報告看不到的狀況）</h3>
+      <ul class="small muted">${blindSpots}</ul>`;
+  } catch (error) {
+    detail.innerHTML = `<div class="notice error">讀取報告失敗：${escapeHtml(error.message)}</div>`;
+  }
+}
+
+async function runReport() {
+  const button = byId("run-report");
+  const minutes = Math.min(1440, Math.max(1, parseInt(byId("run-minutes").value, 10) || 15));
+  button.disabled = true;
+  button.textContent = "產生中…";
+  try {
+    const report = await request("/observability/incident-reports/run", {
+      method: "POST",
+      body: JSON.stringify({ minutes })
+    });
+    selectedReportId = report.report_id;
+    await loadReports();
+    await showReport(report.report_id);
+  } catch (error) {
+    byId("report-detail").innerHTML = `<div class="notice error">產生報告失敗：${escapeHtml(error.message)}</div>`;
+  } finally {
+    button.disabled = false;
+    button.textContent = "立即產生報告";
+  }
+}
+
+async function refreshAll() {
+  try {
+    if (!(await checkAccess())) return;
+  } catch (error) {
+    showGate(`無法連線到 broker：${escapeHtml(error.message)}`);
+    return;
+  }
+  await Promise.all([loadHealth(), loadLlm(), loadReports()]);
+  if (selectedReportId) await showReport(selectedReportId);
+}
+
+byId("refresh-all").addEventListener("click", refreshAll);
+byId("run-report").addEventListener("click", runReport);
+refreshAll();
+</script>
+</body>
+</html>

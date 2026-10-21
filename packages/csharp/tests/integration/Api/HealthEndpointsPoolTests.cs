@@ -1,5 +1,4 @@
 using System.Net;
-using System.Net.Sockets;
 using System.Text.Json;
 using Integration.Tests.Fixtures;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -153,40 +152,5 @@ public sealed class HealthEndpointsPoolTests : IClassFixture<FunctionPoolEnabled
         public Task<(bool Success, string? ResultPayload, string? Error)> ExecuteAsync(
             string requestId, string route, string payload, string scope, CancellationToken ct)
             => Task.FromResult<(bool, string?, string?)>((true, "{}", null));
-    }
-}
-
-/// <summary>
-/// 開啟 Function Pool 的測試主機。pool 綁在 127.0.0.1 的一個空閒埠;
-/// worker 簽章不強制(這組測試驗的是健康端點,不是 worker 認證)。
-/// </summary>
-public sealed class FunctionPoolEnabledFixture : BrokerAuthorizationFixture
-{
-    private static readonly int SharedPoolPort = FreeTcpPort();
-
-    public FunctionPoolEnabledFixture()
-        : base(
-            enforceWorkerAuth: false,
-            hostSettings: new Dictionary<string, string?>
-            {
-                ["FunctionPool:Enabled"] = "true",
-                ["FunctionPool:BindAddress"] = "127.0.0.1",
-                ["FunctionPool:ListenPort"] = SharedPoolPort.ToString(System.Globalization.CultureInfo.InvariantCulture),
-                ["FunctionPool:HeartbeatTimeoutSeconds"] = "30",
-                // 啟動時的法律條文 RAG 種子會從網路抓全文,每次新資料庫都要抓好幾分鐘;這組測試用不到。
-                ["RagSeed:Enabled"] = "false",
-            })
-    {
-    }
-
-    public int PoolPort => SharedPoolPort;
-
-    private static int FreeTcpPort()
-    {
-        var listener = new TcpListener(IPAddress.Loopback, 0);
-        listener.Start();
-        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
-        listener.Stop();
-        return port;
     }
 }
