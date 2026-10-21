@@ -105,7 +105,13 @@ public class AuditService : IAuditService
                 return false;
 
             // 重新計算 hash 並驗證
-            var hashInput = $"{ev.PreviousEventHash}|{ev.TraceId}|{ev.TraceSeq}|{ev.EventType}|{ev.PayloadDigest}|{ev.OccurredAt:O}";
+            // [修正 2026-10 AnthonyLee] 寫入時 occurredAt 是 DateTime.UtcNow（Kind=Utc），「:O」格式帶結尾的 "Z"；
+            // 從 SQLite 讀回時 Kind 變成 Unspecified，「:O」就不帶 "Z"，字串不同、雜湊必不相同，
+            // 任何正常的鏈都會驗證失敗。所有事件寫入時都是 UTC，這裡補回 Kind 再格式化，與寫入端一致。
+            var occurredAtUtc = ev.OccurredAt.Kind == DateTimeKind.Utc
+                ? ev.OccurredAt
+                : DateTime.SpecifyKind(ev.OccurredAt, DateTimeKind.Utc);
+            var hashInput = $"{ev.PreviousEventHash}|{ev.TraceId}|{ev.TraceSeq}|{ev.EventType}|{ev.PayloadDigest}|{occurredAtUtc:O}";
             var expectedHash = ComputeSha256(hashInput);
             if (ev.EventHash != expectedHash)
                 return false;
