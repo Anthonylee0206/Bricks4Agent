@@ -2079,8 +2079,10 @@ function renderAlertsList(items) {
     return;
   }
   list.innerHTML = items.map(item => {
-    const sevColor = item.severity >= 3 ? "danger" : item.severity >= 2 ? "warn" : "muted";
-    const sevLabel = item.severity >= 3 ? "Error" : item.severity >= 2 ? "Warning" : "Info";
+    // [修正 2026-10 AnthonyLee] 對齊 ObservationSeverity：Info=0、Warning=1、Alert=2、Critical=3。
+    // 原本以 >=3 為 Error、>=2 為 Warning，錯位一級：Warning（例如 WORKER_HEARTBEAT_LOST）被顯示成 Info。
+    const sevColor = item.severity >= 2 ? "danger" : item.severity >= 1 ? "warn" : "muted";
+    const sevLabel = ["Info", "Warning", "Alert", "Critical"][item.severity] ?? "Info";
     const ts = item.observedAt ? new Date(item.observedAt).toLocaleString("zh-TW") : "";
     return `<div class="item">
       <div class="row" style="justify-content:space-between">
