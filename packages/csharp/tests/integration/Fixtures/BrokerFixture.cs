@@ -64,6 +64,9 @@ public class BrokerFixture : IAsyncLifetime
                 builder.UseSetting("HighLevelCoordinator:AccessRoot", _tempAccessRoot);
                 // 確認 draft 時不向本機模型詢問執行模型建議
                 builder.UseSetting("HighLevelExecutionModelPolicy:Enabled", "false");
+                // [修正 2026-10 AnthonyLee] 啟動時的法律條文 RAG 種子會從網路抓全文、逐條呼叫嵌入模型，
+                // 每個測試主機（新資料庫）都要跑好幾分鐘，沒有 Ollama 時更會一直等逾時；整合測試都用不到它。
+                builder.UseSetting("RagSeed:Enabled", "false");
 
                 builder.ConfigureAppConfiguration((ctx, config) =>
                 {

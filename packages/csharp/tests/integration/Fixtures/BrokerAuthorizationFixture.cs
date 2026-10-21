@@ -70,6 +70,9 @@ public class BrokerAuthorizationFixture : IAsyncLifetime
             builder.UseSetting("Database:Path", databasePath);
             builder.UseSetting("HighLevelCoordinator:AccessRoot", accessRoot);
             builder.UseSetting("Broker:IpRateLimit:Enabled", "false");
+            // [修正 2026-10 AnthonyLee] 啟動時的法律條文 RAG 種子會從網路抓全文、逐條呼叫嵌入模型，
+            // 每個測試主機（新資料庫）都要跑好幾分鐘，沒有 Ollama 時更會一直等逾時；整合測試都用不到它。
+            builder.UseSetting("RagSeed:Enabled", "false");
             foreach (var (key, value) in hostSettings ?? new Dictionary<string, string?>())
             {
                 builder.UseSetting(key, value);
