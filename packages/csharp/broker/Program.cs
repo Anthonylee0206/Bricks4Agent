@@ -640,7 +640,6 @@ var app = builder.Build();
 
 app.Logger.LogInformation("Broker database path: {DbPath}", dbPath);
 
-
 app.Use(async (context, next) =>
 {
     if (context.Request.Path.StartsWithSegments("/dev/admin", StringComparison.OrdinalIgnoreCase) ||
