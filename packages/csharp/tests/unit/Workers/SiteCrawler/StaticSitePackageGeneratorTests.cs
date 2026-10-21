@@ -8,6 +8,8 @@ namespace Unit.Tests.Workers.SiteCrawler;
 public class StaticSitePackageGeneratorTests : IDisposable
 {
     private readonly string tempRoot = Path.Combine(Path.GetTempPath(), $"b4a-package-test-{Guid.NewGuid():N}");
+    // 與 StaticSitePackageGenerator 的標記檔名稱一致（產生器以它辨識自己產生過的目錄）
+    private const string PackageMarkerFileName = ".bricks4agent-static-site-package";
 
     public void Dispose()
     {
@@ -529,6 +531,8 @@ public class StaticSitePackageGeneratorTests : IDisposable
     {
         var staleDirectory = Path.Combine(tempRoot, "clean-site");
         Directory.CreateDirectory(Path.Combine(staleDirectory, "components", "generated"));
+        // [修正 2026-10 AnthonyLee] 產生器只清掉「自己產生過」的目錄（以標記檔辨識），這裡模擬上一次的產出
+        File.WriteAllText(Path.Combine(staleDirectory, PackageMarkerFileName), "previous package");
         File.WriteAllText(Path.Combine(staleDirectory, "old.txt"), "stale");
         File.WriteAllText(Path.Combine(staleDirectory, "components", "generated", "OldComponent.js"), "stale");
         var document = ComponentSchemaValidatorTests.BuildValidDocument();
@@ -549,6 +553,27 @@ public class StaticSitePackageGeneratorTests : IDisposable
             "old.txt",
             "components/generated/OldComponent.js",
         ]);
+    }
+
+    [Fact]
+    public void Generate_WhenDirectoryIsNotAPackage_RefusesAndKeepsItsFiles()
+    {
+        // [新增 2026-10 AnthonyLee] 防止打錯路徑時遞迴刪掉不相干的目錄：沒有標記檔的非空目錄要拒絕、內容不能動
+        var unrelatedDirectory = Path.Combine(tempRoot, "not-a-package");
+        Directory.CreateDirectory(unrelatedDirectory);
+        var keep = Path.Combine(unrelatedDirectory, "keep.txt");
+        File.WriteAllText(keep, "user data");
+        var generator = new StaticSitePackageGenerator();
+
+        var act = () => generator.Generate(ComponentSchemaValidatorTests.BuildValidDocument(), new StaticSitePackageOptions
+        {
+            OutputDirectory = tempRoot,
+            PackageName = "not-a-package",
+            EnforceQualityGate = true,
+        });
+
+        act.Should().Throw<InvalidOperationException>().WithMessage("*Refusing to overwrite*");
+        File.ReadAllText(keep).Should().Be("user data");
     }
 
     [Fact]

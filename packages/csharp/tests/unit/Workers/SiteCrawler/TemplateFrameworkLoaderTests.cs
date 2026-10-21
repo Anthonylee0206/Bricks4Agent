@@ -138,7 +138,9 @@ public class TemplateFrameworkLoaderTests : IDisposable
 
         foreach (var template in templates.Templates)
         {
-            readme.Should().Contain($"`{template.TemplateId}`");
+            // [修正 2026-10 AnthonyLee] README 已改為產生後的 HTML，markdown 的 `x` 會轉成 <code>x</code>，
+            // 原本找反引號在 HTML 裡永遠找不到。
+            readme.Should().Contain($"<code>{template.TemplateId}</code>");
         }
     }
 

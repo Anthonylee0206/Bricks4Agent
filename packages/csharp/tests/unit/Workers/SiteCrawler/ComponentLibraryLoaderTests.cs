@@ -77,7 +77,9 @@ public class ComponentLibraryLoaderTests : IDisposable
 
         foreach (var component in manifest.Components)
         {
-            readme.Should().Contain($"`{component.Type}`");
+            // [修正 2026-10 AnthonyLee] README 已改為產生後的 HTML，markdown 的 `x` 會轉成 <code>x</code>，
+            // 原本找反引號在 HTML 裡永遠找不到。
+            readme.Should().Contain($"<code>{component.Type}</code>");
         }
     }
 
