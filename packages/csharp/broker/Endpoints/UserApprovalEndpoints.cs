@@ -37,7 +37,7 @@ public static class UserApprovalEndpoints
             return result == null
                 ? Results.NotFound(ApiResponseHelper.Error("Approval not found, already decided, or not yours.", 404))
                 : Results.Ok(ApiResponseHelper.Success(new { item = result }));
-        });
+        }).WithBrokerAuthPolicy(BrokerAuthPolicy.SignedLink); // [修正 2026-10 AnthonyLee] 與上方 GET 相同，由連結 token 驗證（原本沒標，套用預設 ScopedToken 而被擋）
 
         userApprovals.MapPost("/{approvalId}/reject", (HttpContext ctx, ApprovalLinkService link, IBrokerService broker, string approvalId) =>
         {
@@ -51,7 +51,7 @@ public static class UserApprovalEndpoints
             return result == null
                 ? Results.NotFound(ApiResponseHelper.Error("Approval not found, already decided, or not yours.", 404))
                 : Results.Ok(ApiResponseHelper.Success(new { item = result }));
-        });
+        }).WithBrokerAuthPolicy(BrokerAuthPolicy.SignedLink); // [修正 2026-10 AnthonyLee] 與上方 GET 相同，由連結 token 驗證（原本沒標，套用預設 ScopedToken 而被擋）
     }
 
     private static string GetToken(HttpContext ctx, JsonElement body)

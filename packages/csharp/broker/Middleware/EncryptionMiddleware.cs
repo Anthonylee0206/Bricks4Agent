@@ -47,7 +47,10 @@ public class EncryptionMiddleware
         return path.StartsWith("/api/v1/high-level/line/", StringComparison.OrdinalIgnoreCase)
             || path.StartsWith("/api/v1/tool-specs/", StringComparison.OrdinalIgnoreCase)
             || path.StartsWith("/api/v1/portal/", StringComparison.OrdinalIgnoreCase)
-            || path.StartsWith("/api/v1/local-admin/", StringComparison.OrdinalIgnoreCase);
+            || path.StartsWith("/api/v1/local-admin/", StringComparison.OrdinalIgnoreCase)
+            // [whitelist add: 2026-10 AnthonyLee] 使用者審批頁（user-approvals.html）以簽章連結 token 驗證、
+            // 送明文 JSON 的核准／拒絕；沒有加密工作階段，原本一律被擋成 400。token 仍由 handler 驗證。
+            || path.StartsWith("/api/v1/user/approvals/", StringComparison.OrdinalIgnoreCase);
     }
 
     private static readonly JsonSerializerOptions JsonOptions = new()
