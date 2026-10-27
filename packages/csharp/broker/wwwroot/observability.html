@@ -194,6 +194,13 @@ async function checkAccess() {
 async function loadHealth() {
   try {
     const data = await request("/observability/health-score");
+    if (data.pool_enabled === false) {
+      byId("health-score").textContent = "—";
+      byId("health-workers").textContent = "—";
+      byId("health-tag").outerHTML = '<span id="health-tag" class="tag">未啟用</span>';
+      byId("health-rows").innerHTML = `<tr><td colspan="6" class="muted">${escapeHtml(data.message)}</td></tr>`;
+      return;
+    }
     byId("health-score").textContent = data.overall_score;
     byId("health-workers").textContent = data.worker_count;
     byId("health-tag").outerHTML = healthTag(data.overall_status).replace("<span", '<span id="health-tag"');
@@ -208,8 +215,7 @@ async function loadHealth() {
         </tr>`).join("")
       : '<tr><td colspan="6" class="muted">目前沒有任何 worker 在線。</td></tr>';
   } catch (error) {
-    const message = error.status === 503 ? "Function Pool 未啟用，沒有 worker 健康資料。" : `讀取失敗：${error.message}`;
-    byId("health-rows").innerHTML = `<tr><td colspan="6" class="muted">${escapeHtml(message)}</td></tr>`;
+    byId("health-rows").innerHTML = `<tr><td colspan="6" class="muted">${escapeHtml(`讀取失敗：${error.message}`)}</td></tr>`;
   }
 }
 

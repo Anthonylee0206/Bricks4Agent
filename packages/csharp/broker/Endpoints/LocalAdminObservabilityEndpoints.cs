@@ -73,8 +73,15 @@ public static class LocalAdminObservabilityEndpoints
                 await IncidentReportEndpoints.RunManualAsync(service, options, RequestBodyHelper.GetBody(ctx), ct))));
     }
 
+    /// <summary>
+    /// Function Pool 沒開是設定狀態，不是伺服器故障，所以回 200 並標明 pool_enabled=false。
+    /// 原本回 503：observability.html 每次載入都會讀健康分數，R6（伺服器錯誤）就把它當成異常，
+    /// 等於觀測頁自己製造誤報。
+    /// </summary>
     private static IResult PoolDisabled()
-        => Results.Json(
-            ApiResponseHelper.Error("Function Pool 未啟用，沒有 worker 健康資料。", 503),
-            statusCode: StatusCodes.Status503ServiceUnavailable);
+        => Results.Ok(ApiResponseHelper.Success(new
+        {
+            pool_enabled = false,
+            message = "Function Pool 未啟用，沒有 worker 健康資料。",
+        }));
 }
